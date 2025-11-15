@@ -8,6 +8,8 @@ let recordingData = {
 };
 
 let isRecording = false;
+let lastScreenshotTime = 0;
+const SCREENSHOT_COOLDOWN = 1000; // Minimum 1 second between screenshots
 
 // Listen for messages from popup and content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -44,6 +46,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 function startRecording(settings) {
   isRecording = true;
+  lastScreenshotTime = 0; // Reset screenshot cooldown
   recordingData = {
     startTime: Date.now(),
     endTime: null,
@@ -96,19 +99,27 @@ async function captureAction(actionData, tab) {
 
   recordingData.actions.push(action);
 
-  // Capture screenshot if auto-screenshot is enabled
+  // Capture screenshot if auto-screenshot is enabled and cooldown has passed
   if (recordingData.settings.autoScreenshot) {
-    await captureScreenshot(tab.id, action);
+    const now = Date.now();
+    if (now - lastScreenshotTime >= SCREENSHOT_COOLDOWN) {
+      await captureScreenshot(tab.id, action);
+      lastScreenshotTime = now;
+    }
   }
 
   // Update storage and notify popup
   chrome.storage.local.set({ recordingData });
 
-  // Notify popup of update
-  chrome.runtime.sendMessage({
-    action: 'recordingUpdate',
-    data: recordingData
-  });
+  // Notify popup of update (only if popup is open)
+  try {
+    chrome.runtime.sendMessage({
+      action: 'recordingUpdate',
+      data: recordingData
+    });
+  } catch (error) {
+    // Popup is closed, ignore error
+  }
 }
 
 async function captureScreenshot(tabId, associatedAction = null) {
