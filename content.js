@@ -22,8 +22,9 @@
   let autoFillTriggered = false;
   let submitButtonsIntercepted = false;
 
-  // Load settings from storage
+  // Load settings and check if recording is active
   chrome.storage.local.get([
+    'isRecording',
     'captureClicks', 'captureInputs', 'captureNavigation', 'autoScreenshot',
     'enableAutoFill', 'pauseBeforeSubmit', 'useRealisticData'
   ], (result) => {
@@ -36,7 +37,11 @@
       pauseBeforeSubmit: result.pauseBeforeSubmit !== false,
       useRealisticData: result.useRealisticData !== false
     };
-    initializeCapture();
+
+    // Only initialize if recording is actually active
+    if (result.isRecording) {
+      initializeCapture();
+    }
   });
 
   function initializeCapture() {
@@ -103,21 +108,31 @@
     if (submitButtonsIntercepted) return;
     submitButtonsIntercepted = true;
 
+    // Track if we're in the middle of showing a dialog
+    let showingDialog = false;
+
     // Find all submit buttons
     const submitButtons = AutoFill.findSubmitButtons();
 
     console.log(`DocBot: Intercepting ${submitButtons.length} submit buttons`);
 
     submitButtons.forEach(button => {
+      const originalOnClick = button.onclick;
+
       button.addEventListener('click', async (event) => {
+        // Skip if we're already showing dialog or if pauseBeforeSubmit is disabled
+        if (showingDialog || !settings.pauseBeforeSubmit) return;
+
         // Prevent default submission
         event.preventDefault();
         event.stopPropagation();
 
+        showingDialog = true;
         console.log('DocBot: Submit button clicked, showing dialog...');
 
         // Show confirmation dialog
         const shouldContinue = await SubmitDialog.show();
+        showingDialog = false;
 
         if (shouldContinue) {
           console.log('DocBot: User chose to continue');
@@ -128,12 +143,29 @@
             formAction: button.form?.action || 'unknown'
           });
 
-          // Allow the original click to proceed
-          // Remove our listener temporarily
-          button.removeEventListener('click', arguments.callee);
+          // Disable interception temporarily and submit the form
+          settings.pauseBeforeSubmit = false;
 
-          // Trigger the original click
-          button.click();
+          // Call original onclick if it exists
+          if (originalOnClick) {
+            originalOnClick.call(button, event);
+          }
+
+          // Submit the form
+          if (button.form) {
+            button.form.submit();
+          } else {
+            // Try clicking the button without our listener
+            setTimeout(() => {
+              settings.pauseBeforeSubmit = true;
+            }, 100);
+            button.click();
+          }
+
+          // Re-enable after a short delay
+          setTimeout(() => {
+            settings.pauseBeforeSubmit = true;
+          }, 500);
         } else {
           console.log('DocBot: User cancelled submission');
 
@@ -147,14 +179,16 @@
 
     // Also intercept form submissions via Enter key
     document.addEventListener('submit', async (event) => {
-      if (!settings.pauseBeforeSubmit) return;
+      if (!settings.pauseBeforeSubmit || showingDialog) return;
 
       event.preventDefault();
       event.stopPropagation();
 
+      showingDialog = true;
       console.log('DocBot: Form submit detected, showing dialog...');
 
       const shouldContinue = await SubmitDialog.show();
+      showingDialog = false;
 
       if (shouldContinue) {
         // Record the submission
@@ -163,8 +197,13 @@
           submitMethod: 'form_event'
         });
 
-        // Submit the form
+        // Submit the form without triggering our listener
+        settings.pauseBeforeSubmit = false;
         event.target.submit();
+
+        setTimeout(() => {
+          settings.pauseBeforeSubmit = true;
+        }, 500);
       } else {
         sendAction('submit_cancelled', {
           submitMethod: 'form_event'
@@ -349,11 +388,21 @@
     // Listen for recording stop
     chrome.storage.onChanged.addListener((changes) => {
       if (changes.isRecording && !changes.isRecording.newValue) {
-        indicator.remove();
+        if (indicator && indicator.parentNode) {
+          indicator.remove();
+        }
         removeEventListeners();
       }
     });
   }
+
+  // Listen for recording start from popup
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes.isRecording && changes.isRecording.newValue && !changes.isRecording.oldValue) {
+      // Recording just started - initialize capture
+      initializeCapture();
+    }
+  });
 
   function removeEventListeners() {
     document.removeEventListener('click', handleClick, true);
