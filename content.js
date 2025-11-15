@@ -22,27 +22,37 @@
   let autoFillTriggered = false;
   let submitButtonsIntercepted = false;
 
-  // Load settings and check if recording is active
-  chrome.storage.local.get([
-    'isRecording',
-    'captureClicks', 'captureInputs', 'captureNavigation', 'autoScreenshot',
-    'enableAutoFill', 'pauseBeforeSubmit', 'useRealisticData'
-  ], (result) => {
-    settings = {
-      captureClicks: result.captureClicks !== false,
-      captureInputs: result.captureInputs !== false,
-      captureNavigation: result.captureNavigation !== false,
-      autoScreenshot: result.autoScreenshot !== false,
-      enableAutoFill: result.enableAutoFill !== false,
-      pauseBeforeSubmit: result.pauseBeforeSubmit !== false,
-      useRealisticData: result.useRealisticData !== false
-    };
+  // Check if extension context is valid before initializing
+  if (!chrome.runtime?.id) {
+    console.log('DocBot: Extension context invalid, script will not initialize');
+    return;
+  }
 
-    // Only initialize if recording is actually active
-    if (result.isRecording) {
-      initializeCapture();
-    }
-  });
+  // Load settings and check if recording is active
+  try {
+    chrome.storage.local.get([
+      'isRecording',
+      'captureClicks', 'captureInputs', 'captureNavigation', 'autoScreenshot',
+      'enableAutoFill', 'pauseBeforeSubmit', 'useRealisticData'
+    ], (result) => {
+      settings = {
+        captureClicks: result.captureClicks !== false,
+        captureInputs: result.captureInputs !== false,
+        captureNavigation: result.captureNavigation !== false,
+        autoScreenshot: result.autoScreenshot !== false,
+        enableAutoFill: result.enableAutoFill !== false,
+        pauseBeforeSubmit: result.pauseBeforeSubmit !== false,
+        useRealisticData: result.useRealisticData !== false
+      };
+
+      // Only initialize if recording is actually active
+      if (result.isRecording) {
+        initializeCapture();
+      }
+    });
+  } catch (error) {
+    console.log('DocBot: Failed to load settings, extension may have been reloaded');
+  }
 
   function initializeCapture() {
     console.log('DocBot: Capture initialized', settings);
@@ -343,13 +353,24 @@
   }
 
   function sendAction(type, details) {
-    chrome.runtime.sendMessage({
-      action: 'captureAction',
-      data: {
-        type,
-        details
-      }
-    });
+    // Check if extension context is still valid
+    if (!chrome.runtime?.id) {
+      console.log('DocBot: Extension context invalidated, skipping action capture');
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage({
+        action: 'captureAction',
+        data: {
+          type,
+          details
+        }
+      });
+    } catch (error) {
+      // Extension was reloaded or context is invalid
+      console.log('DocBot: Failed to send action, extension may have been reloaded');
+    }
   }
 
   function getElementText(element) {
@@ -414,23 +435,33 @@
     document.body.appendChild(indicator);
 
     // Listen for recording stop
-    chrome.storage.onChanged.addListener((changes) => {
-      if (changes.isRecording && !changes.isRecording.newValue) {
-        if (indicator && indicator.parentNode) {
-          indicator.remove();
+    try {
+      chrome.storage.onChanged.addListener((changes) => {
+        if (changes.isRecording && !changes.isRecording.newValue) {
+          if (indicator && indicator.parentNode) {
+            indicator.remove();
+          }
+          removeEventListeners();
         }
-        removeEventListeners();
-      }
-    });
+      });
+    } catch (error) {
+      console.log('DocBot: Failed to add stop listener, extension may have been reloaded');
+    }
   }
 
   // Listen for recording start from popup
-  chrome.storage.onChanged.addListener((changes) => {
-    if (changes.isRecording && changes.isRecording.newValue && !changes.isRecording.oldValue) {
-      // Recording just started - initialize capture
-      initializeCapture();
-    }
-  });
+  try {
+    chrome.storage.onChanged.addListener((changes) => {
+      if (changes.isRecording && changes.isRecording.newValue && !changes.isRecording.oldValue) {
+        // Recording just started - initialize capture
+        if (chrome.runtime?.id) {
+          initializeCapture();
+        }
+      }
+    });
+  } catch (error) {
+    console.log('DocBot: Failed to add storage listener, extension may have been reloaded');
+  }
 
   function removeEventListeners() {
     document.removeEventListener('click', handleClick, true);
