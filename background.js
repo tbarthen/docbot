@@ -61,12 +61,12 @@ function startRecording(settings) {
     recordingData
   });
 
-  // Inject content script into active tab
+  // Inject content scripts into active tab (in order: autofill, dialog, then content)
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (tabs[0]) {
       chrome.scripting.executeScript({
         target: { tabId: tabs[0].id },
-        files: ['content.js']
+        files: ['autofill.js', 'submit-dialog.js', 'content.js']
       });
     }
   });
