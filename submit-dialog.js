@@ -1,0 +1,1 @@
+const SubmitDialog = { show() { return Promise.resolve(true); } };
