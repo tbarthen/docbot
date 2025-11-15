@@ -110,6 +110,7 @@
 
     // Track if we're in the middle of showing a dialog
     let showingDialog = false;
+    let allowedButton = null; // Button that's allowed to submit without dialog
 
     // Find all submit buttons
     const submitButtons = AutoFill.findSubmitButtons();
@@ -117,9 +118,14 @@
     console.log(`DocBot: Intercepting ${submitButtons.length} submit buttons`);
 
     submitButtons.forEach(button => {
-      const originalOnClick = button.onclick;
-
       button.addEventListener('click', async (event) => {
+        // Skip if this button was just confirmed
+        if (allowedButton === button) {
+          console.log('DocBot: Allowing confirmed button to submit');
+          allowedButton = null;
+          return;
+        }
+
         // Skip if we're already showing dialog or if pauseBeforeSubmit is disabled
         if (showingDialog || !settings.pauseBeforeSubmit) return;
 
@@ -143,29 +149,23 @@
             formAction: button.form?.action || 'unknown'
           });
 
-          // Disable interception temporarily and submit the form
-          settings.pauseBeforeSubmit = false;
+          // Mark this button as allowed for the next click
+          allowedButton = button;
 
-          // Call original onclick if it exists
-          if (originalOnClick) {
-            originalOnClick.call(button, event);
-          }
-
-          // Submit the form
-          if (button.form) {
-            button.form.submit();
-          } else {
-            // Try clicking the button without our listener
-            setTimeout(() => {
-              settings.pauseBeforeSubmit = true;
-            }, 100);
-            button.click();
-          }
-
-          // Re-enable after a short delay
+          // Trigger a new click event that will go through naturally
           setTimeout(() => {
-            settings.pauseBeforeSubmit = true;
-          }, 500);
+            const clickEvent = new MouseEvent('click', {
+              bubbles: true,
+              cancelable: true,
+              view: window
+            });
+            button.dispatchEvent(clickEvent);
+
+            // Clear the allowed button after a delay
+            setTimeout(() => {
+              allowedButton = null;
+            }, 1000);
+          }, 10);
         } else {
           console.log('DocBot: User cancelled submission');
 
@@ -178,7 +178,16 @@
     });
 
     // Also intercept form submissions via Enter key
+    let allowedForm = null;
+
     document.addEventListener('submit', async (event) => {
+      // Skip if this form was just confirmed
+      if (allowedForm === event.target) {
+        console.log('DocBot: Allowing confirmed form to submit');
+        allowedForm = null;
+        return;
+      }
+
       if (!settings.pauseBeforeSubmit || showingDialog) return;
 
       event.preventDefault();
@@ -197,13 +206,32 @@
           submitMethod: 'form_event'
         });
 
-        // Submit the form without triggering our listener
-        settings.pauseBeforeSubmit = false;
-        event.target.submit();
+        // Mark this form as allowed
+        allowedForm = event.target;
 
-        setTimeout(() => {
-          settings.pauseBeforeSubmit = true;
-        }, 500);
+        // Try to find and click the submit button, or submit the form
+        const submitBtn = event.target.querySelector('[type="submit"]') ||
+                         event.target.querySelector('button:not([type="button"])');
+
+        if (submitBtn) {
+          // Click the submit button to trigger normal flow
+          setTimeout(() => {
+            allowedButton = submitBtn;
+            submitBtn.click();
+            setTimeout(() => {
+              allowedForm = null;
+              allowedButton = null;
+            }, 1000);
+          }, 10);
+        } else {
+          // No submit button found, use form.submit()
+          setTimeout(() => {
+            event.target.submit();
+            setTimeout(() => {
+              allowedForm = null;
+            }, 1000);
+          }, 10);
+        }
       } else {
         sendAction('submit_cancelled', {
           submitMethod: 'form_event'
