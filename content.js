@@ -14,7 +14,7 @@
     captureInputs: true,
     captureNavigation: true,
     autoScreenshot: true,
-    enableAutoFill: false,
+    enableAutoFill: true,
     pauseBeforeSubmit: true,
     useRealisticData: true
   };
@@ -33,7 +33,7 @@
       captureInputs: result.captureInputs !== false,
       captureNavigation: result.captureNavigation !== false,
       autoScreenshot: result.autoScreenshot !== false,
-      enableAutoFill: result.enableAutoFill === true,
+      enableAutoFill: result.enableAutoFill !== false,
       pauseBeforeSubmit: result.pauseBeforeSubmit !== false,
       useRealisticData: result.useRealisticData !== false
     };

@@ -52,7 +52,7 @@ async function loadSettings() {
   captureInputsCheckbox.checked = settings.captureInputs !== false;
   captureNavigationCheckbox.checked = settings.captureNavigation !== false;
   autoScreenshotCheckbox.checked = settings.autoScreenshot !== false;
-  enableAutoFillCheckbox.checked = settings.enableAutoFill === true;
+  enableAutoFillCheckbox.checked = settings.enableAutoFill !== false;
   pauseBeforeSubmitCheckbox.checked = settings.pauseBeforeSubmit !== false;
   useRealisticDataCheckbox.checked = settings.useRealisticData !== false;
   apiKeyInput.value = settings.apiKey || '';
