@@ -3,11 +3,44 @@
 (function() {
   'use strict';
 
-  // Prevent multiple injections
+  // Prevent multiple injections - clean up old listeners if re-injecting
   if (window.docbotInjected) {
-    return;
+    console.log('DocBot: Script already injected, cleaning up old listeners');
+    // Remove old event listeners if they exist
+    if (window.docbotCleanup) {
+      window.docbotCleanup();
+    }
   }
   window.docbotInjected = true;
+
+  // Track the last right-clicked element for context menu
+  let lastRightClickedElement = null;
+  document.addEventListener('contextmenu', (event) => {
+    if (event.target.matches('input, select, textarea')) {
+      lastRightClickedElement = event.target;
+    }
+  }, true);
+
+  // Listen for messages from background script (e.g., context menu clicks)
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === 'fillClickedField' && lastRightClickedElement) {
+      // Check if AutoFill module is available
+      if (typeof AutoFill !== 'undefined') {
+        const filled = AutoFill.fillField(lastRightClickedElement, true);
+        if (filled) {
+          AutoFill.highlightField(lastRightClickedElement);
+          console.log('DocBot: Filled field via context menu');
+          sendResponse({ success: true });
+        } else {
+          console.log('DocBot: Could not fill field via context menu');
+          sendResponse({ success: false, error: 'Could not fill field' });
+        }
+      } else {
+        sendResponse({ success: false, error: 'AutoFill module not loaded' });
+      }
+    }
+    return true; // Keep message channel open for async response
+  });
 
   let settings = {
     captureClicks: true,
@@ -15,12 +48,13 @@
     captureNavigation: true,
     autoScreenshot: true,
     enableAutoFill: true,
-    pauseBeforeSubmit: true,
     useRealisticData: true
   };
 
   let autoFillTriggered = false;
-  let submitButtonsIntercepted = false;
+  let autoFillTimeout = null; // Debounce timer for auto-fill
+  let isAutoFilling = false; // Track if we're currently auto-filling to prevent cascading triggers
+  let filledFieldsCount = 0; // Track how many fields we've filled to avoid re-filling same fields
 
   // Check if extension context is valid before initializing
   if (!chrome.runtime?.id) {
@@ -28,27 +62,28 @@
     return;
   }
 
-  // Load settings and check if recording is active
+  // Load settings and initialize capture
+  // Note: This script is injected by background.js when recording starts,
+  // so we can assume recording is active
   try {
     chrome.storage.local.get([
       'isRecording',
       'captureClicks', 'captureInputs', 'captureNavigation', 'autoScreenshot',
-      'enableAutoFill', 'pauseBeforeSubmit', 'useRealisticData'
+      'enableAutoFill', 'useRealisticData'
     ], (result) => {
       settings = {
         captureClicks: result.captureClicks !== false,
         captureInputs: result.captureInputs !== false,
         captureNavigation: result.captureNavigation !== false,
         autoScreenshot: result.autoScreenshot !== false,
-        enableAutoFill: result.enableAutoFill !== false,
-        pauseBeforeSubmit: result.pauseBeforeSubmit !== false,
+        enableAutoFill: result.enableAutoFill === true, // Default to OFF
         useRealisticData: result.useRealisticData !== false
       };
 
-      // Only initialize if recording is actually active
-      if (result.isRecording) {
-        initializeCapture();
-      }
+      console.log('DocBot: Settings loaded, initializing capture...', settings);
+
+      // Initialize capture since this script is only injected when recording starts
+      initializeCapture();
     });
   } catch (error) {
     console.log('DocBot: Failed to load settings, extension may have been reloaded');
@@ -72,10 +107,17 @@
     if (settings.captureNavigation) {
       capturePageLoad();
       captureNavigation();
+
+      // Capture form submissions to detect same-page reloads
+      captureFormSubmissions();
     }
 
-    // Show recording indicator
-    showRecordingIndicator();
+    // Listen for recording stop
+    chrome.storage.onChanged.addListener((changes) => {
+      if (changes.isRecording && !changes.isRecording.newValue) {
+        removeEventListeners();
+      }
+    });
 
     // Auto-fill forms if enabled
     if (settings.enableAutoFill) {
@@ -88,170 +130,99 @@
         setTimeout(() => autoFillPage(), 1000);
       }
 
-      // Intercept submit buttons
-      if (settings.pauseBeforeSubmit) {
-        interceptSubmitButtons();
+      // Watch for new forms being added to the page
+      const formObserver = new MutationObserver((mutations) => {
+        // Don't trigger if we're currently auto-filling (prevents cascading triggers)
+        if (isAutoFilling) return;
+
+        // Track if we found any genuinely new form elements
+        let foundNewFormElement = false;
+
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            if (node.nodeType === Node.ELEMENT_NODE) {
+              // Check if a form or form fields were added
+              if (node.tagName === 'FORM' ||
+                  node.tagName === 'INPUT' ||
+                  node.tagName === 'TEXTAREA' ||
+                  node.tagName === 'SELECT' ||
+                  (node.querySelectorAll && node.querySelectorAll('input, textarea, select').length > 0)) {
+                foundNewFormElement = true;
+                break;
+              }
+            }
+          }
+          if (foundNewFormElement) break;
+        }
+
+        // Only trigger auto-fill if we actually found new form elements AND auto-fill is enabled
+        if (foundNewFormElement && settings.enableAutoFill) {
+          // Debounce: cancel any pending auto-fill and schedule a new one
+          if (autoFillTimeout) {
+            clearTimeout(autoFillTimeout);
+          }
+          autoFillTimeout = setTimeout(() => {
+            autoFillPage();
+            autoFillTimeout = null;
+          }, 1000); // Wait 1 second after last DOM change
+        }
+      });
+
+      // Start observing for new forms
+      if (document.body) {
+        formObserver.observe(document.body, {
+          childList: true,
+          subtree: true
+        });
       }
     }
   }
 
   function autoFillPage() {
-    if (autoFillTriggered) return;
-    autoFillTriggered = true;
+    // Check if AutoFill module is available
+    if (typeof AutoFill === 'undefined') {
+      console.error('DocBot: AutoFill module not loaded!');
+      return;
+    }
 
-    console.log('DocBot: Auto-filling forms...');
+    console.log(`DocBot [autofill]: Starting auto-fill, current scroll: (${window.scrollX}, ${window.scrollY})`);
 
-    // Use the AutoFill module
-    const result = AutoFill.fillAllFields(settings.useRealisticData, 200);
+    // Set flag to prevent mutation observer from triggering during auto-fill
+    isAutoFilling = true;
 
-    // Send notification
-    sendAction('autofill', {
-      fieldsFound: result.total,
-      fieldsFilled: result.filled,
-      timestamp: Date.now()
-    });
+    // Use the AutoFill module - disable visual highlighting (delay=0) to prevent page scrolling
+    const result = AutoFill.fillAllFields(settings.useRealisticData, 0);
 
-    console.log(`DocBot: Auto-filled ${result.filled} of ${result.total} fields`);
-  }
+    console.log(`DocBot [autofill]: Auto-fill complete, final scroll: (${window.scrollX}, ${window.scrollY})`);
 
-  function interceptSubmitButtons() {
-    if (submitButtonsIntercepted) return;
-    submitButtonsIntercepted = true;
+    // Only send notification and log if we actually found NEW fields
+    // (not the same fields being re-added to the DOM)
+    if (result.total > 0 && result.total > filledFieldsCount) {
+      autoFillTriggered = true;
+      filledFieldsCount = result.total; // Update our count
 
-    // Track if we're in the middle of showing a dialog
-    let showingDialog = false;
-    let allowedButton = null; // Button that's allowed to submit without dialog
+      // Send notification
+      sendAction('autofill', {
+        fieldsFound: result.total,
+        fieldsFilled: result.filled,
+        timestamp: Date.now()
+      });
 
-    // Find all submit buttons
-    const submitButtons = AutoFill.findSubmitButtons();
+      console.log(`DocBot: Auto-filled ${result.filled} of ${result.total} fields`);
+    } else if (result.total > 0) {
+      console.log(`DocBot: Skipping auto-fill - same ${result.total} fields already filled`);
+    }
 
-    console.log(`DocBot: Intercepting ${submitButtons.length} submit buttons`);
-
-    submitButtons.forEach(button => {
-      button.addEventListener('click', async (event) => {
-        // Skip if this button was just confirmed
-        if (allowedButton === button) {
-          console.log('DocBot: Allowing confirmed button to submit');
-          allowedButton = null;
-          return;
-        }
-
-        // Skip if we're already showing dialog or if pauseBeforeSubmit is disabled
-        if (showingDialog || !settings.pauseBeforeSubmit) return;
-
-        // Prevent default submission
-        event.preventDefault();
-        event.stopPropagation();
-
-        showingDialog = true;
-        console.log('DocBot: Submit button clicked, showing dialog...');
-
-        // Show confirmation dialog
-        const shouldContinue = await SubmitDialog.show();
-        showingDialog = false;
-
-        if (shouldContinue) {
-          console.log('DocBot: User chose to continue');
-
-          // Record the submission action
-          sendAction('submit_confirmed', {
-            buttonText: button.textContent || button.value,
-            formAction: button.form?.action || 'unknown'
-          });
-
-          // Mark this button as allowed for the next click
-          allowedButton = button;
-
-          // Trigger a new click event that will go through naturally
-          setTimeout(() => {
-            const clickEvent = new MouseEvent('click', {
-              bubbles: true,
-              cancelable: true,
-              view: window
-            });
-            button.dispatchEvent(clickEvent);
-
-            // Clear the allowed button after a delay
-            setTimeout(() => {
-              allowedButton = null;
-            }, 1000);
-          }, 10);
-        } else {
-          console.log('DocBot: User cancelled submission');
-
-          // Record cancellation
-          sendAction('submit_cancelled', {
-            buttonText: button.textContent || button.value
-          });
-        }
-      }, true);
-    });
-
-    // Also intercept form submissions via Enter key
-    let allowedForm = null;
-
-    document.addEventListener('submit', async (event) => {
-      // Skip if this form was just confirmed
-      if (allowedForm === event.target) {
-        console.log('DocBot: Allowing confirmed form to submit');
-        allowedForm = null;
-        return;
-      }
-
-      if (!settings.pauseBeforeSubmit || showingDialog) return;
-
-      event.preventDefault();
-      event.stopPropagation();
-
-      showingDialog = true;
-      console.log('DocBot: Form submit detected, showing dialog...');
-
-      const shouldContinue = await SubmitDialog.show();
-      showingDialog = false;
-
-      if (shouldContinue) {
-        // Record the submission
-        sendAction('submit_confirmed', {
-          formAction: event.target.action || 'unknown',
-          submitMethod: 'form_event'
-        });
-
-        // Mark this form as allowed
-        allowedForm = event.target;
-
-        // Try to find and click the submit button, or submit the form
-        const submitBtn = event.target.querySelector('[type="submit"]') ||
-                         event.target.querySelector('button:not([type="button"])');
-
-        if (submitBtn) {
-          // Click the submit button to trigger normal flow
-          setTimeout(() => {
-            allowedButton = submitBtn;
-            submitBtn.click();
-            setTimeout(() => {
-              allowedForm = null;
-              allowedButton = null;
-            }, 1000);
-          }, 10);
-        } else {
-          // No submit button found, use form.submit()
-          setTimeout(() => {
-            event.target.submit();
-            setTimeout(() => {
-              allowedForm = null;
-            }, 1000);
-          }, 10);
-        }
-      } else {
-        sendAction('submit_cancelled', {
-          submitMethod: 'form_event'
-        });
-      }
-    }, true);
+    // Clear flag after a delay (to allow all mutations to complete)
+    setTimeout(() => {
+      isAutoFilling = false;
+    }, 1500);
   }
 
   function handleClick(event) {
     const target = event.target;
+    const rect = target.getBoundingClientRect();
+
     const details = {
       tagName: target.tagName,
       id: target.id || null,
@@ -261,11 +232,26 @@
       type: target.type || null
     };
 
-    sendAction('click', details);
+    // Use the actual mouse click coordinates from the event
+    // This is more reliable than getBoundingClientRect() which can be affected by CSS transforms
+    // clientX/clientY give us the exact viewport coordinates where the user clicked
+    const elementPosition = {
+      x: event.clientX,  // Exact click X in viewport
+      y: event.clientY,  // Exact click Y in viewport
+      width: rect.width,
+      height: rect.height,
+      scrollX: window.scrollX,  // Current scroll position
+      scrollY: window.scrollY
+    };
+
+    console.log(`DocBot: Click captured at viewport (${elementPosition.x}, ${elementPosition.y}), scroll: (${elementPosition.scrollX}, ${elementPosition.scrollY}), element:`, target);
+
+    sendAction('click', details, elementPosition);
   }
 
   function handleInput(event) {
     const target = event.target;
+    const rect = target.getBoundingClientRect();
 
     // Don't capture actual password or sensitive data
     const isSensitive = target.type === 'password' ||
@@ -282,11 +268,26 @@
       label: getInputLabel(target)
     };
 
-    sendAction('input', details);
+    const elementPosition = {
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height
+    };
+
+    sendAction('input', details, elementPosition);
   }
 
   function handleChange(event) {
     const target = event.target;
+    const rect = target.getBoundingClientRect();
+
+    const elementPosition = {
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height
+    };
 
     if (target.tagName === 'SELECT') {
       const details = {
@@ -296,7 +297,7 @@
         selectedOption: target.options[target.selectedIndex]?.text || null,
         label: getInputLabel(target)
       };
-      sendAction('select', details);
+      sendAction('select', details, elementPosition);
     } else if (target.type === 'checkbox' || target.type === 'radio') {
       const details = {
         type: target.type,
@@ -306,7 +307,7 @@
         value: target.value,
         label: getInputLabel(target)
       };
-      sendAction('toggle', details);
+      sendAction('toggle', details, elementPosition);
     }
   }
 
@@ -352,7 +353,27 @@
     });
   }
 
-  function sendAction(type, details) {
+  function captureFormSubmissions() {
+    // Listen for form submissions to detect page reloads (even to same URL)
+    document.addEventListener('submit', (event) => {
+      const form = event.target;
+      console.log('DocBot: Form submission detected', form);
+
+      // Set a flag in storage to indicate a form was submitted
+      // This will be checked after the page reloads
+      try {
+        chrome.storage.local.set({
+          formSubmitted: true,
+          formSubmitTime: Date.now(),
+          formSubmitUrl: window.location.href
+        });
+      } catch (error) {
+        console.log('DocBot: Failed to set form submission flag:', error);
+      }
+    }, true);
+  }
+
+  function sendAction(type, details, elementPosition = null) {
     // Check if extension context is still valid
     if (!chrome.runtime?.id) {
       console.log('DocBot: Extension context invalidated, skipping action capture');
@@ -364,12 +385,17 @@
         action: 'captureAction',
         data: {
           type,
-          details
+          details,
+          elementPosition
+        }
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.log('DocBot: Error sending action:', chrome.runtime.lastError.message);
         }
       });
     } catch (error) {
       // Extension was reloaded or context is invalid
-      console.log('DocBot: Failed to send action, extension may have been reloaded');
+      console.log('DocBot: Failed to send action, extension may have been reloaded:', error);
     }
   }
 
@@ -403,70 +429,13 @@
     return null;
   }
 
-  function showRecordingIndicator() {
-    const indicator = document.createElement('div');
-    indicator.id = 'docbot-recording-indicator';
-    indicator.innerHTML = '● Recording';
-    indicator.style.cssText = `
-      position: fixed;
-      top: 10px;
-      right: 10px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      padding: 8px 16px;
-      border-radius: 20px;
-      font-family: Arial, sans-serif;
-      font-size: 14px;
-      font-weight: 600;
-      z-index: 999999;
-      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-      animation: docbot-pulse 2s infinite;
-    `;
-
-    const style = document.createElement('style');
-    style.textContent = `
-      @keyframes docbot-pulse {
-        0%, 100% { opacity: 1; transform: scale(1); }
-        50% { opacity: 0.8; transform: scale(0.98); }
-      }
-    `;
-    document.head.appendChild(style);
-
-    document.body.appendChild(indicator);
-
-    // Listen for recording stop
-    try {
-      chrome.storage.onChanged.addListener((changes) => {
-        if (changes.isRecording && !changes.isRecording.newValue) {
-          if (indicator && indicator.parentNode) {
-            indicator.remove();
-          }
-          removeEventListeners();
-        }
-      });
-    } catch (error) {
-      console.log('DocBot: Failed to add stop listener, extension may have been reloaded');
-    }
-  }
-
-  // Listen for recording start from popup
-  try {
-    chrome.storage.onChanged.addListener((changes) => {
-      if (changes.isRecording && changes.isRecording.newValue && !changes.isRecording.oldValue) {
-        // Recording just started - initialize capture
-        if (chrome.runtime?.id) {
-          initializeCapture();
-        }
-      }
-    });
-  } catch (error) {
-    console.log('DocBot: Failed to add storage listener, extension may have been reloaded');
-  }
-
   function removeEventListeners() {
     document.removeEventListener('click', handleClick, true);
     document.removeEventListener('input', handleInput, true);
     document.removeEventListener('change', handleChange, true);
   }
+
+  // Expose cleanup function for re-initialization
+  window.docbotCleanup = removeEventListeners;
 
 })();

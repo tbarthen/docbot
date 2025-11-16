@@ -1,38 +1,68 @@
 // DocBot Popup Script
+console.log('DocBot popup.js script loaded');
+
 let isRecording = false;
 let recordingData = null;
 let durationInterval = null;
 
-// DOM Elements
-const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
-const statusIndicator = document.getElementById('statusIndicator');
-const statusText = document.getElementById('statusText');
-const recordingInfo = document.getElementById('recordingInfo');
-const exportSection = document.getElementById('exportSection');
-const screenshotCount = document.getElementById('screenshotCount');
-const actionCount = document.getElementById('actionCount');
-const durationElement = document.getElementById('duration');
-
-const analyzeBtn = document.getElementById('analyzeBtn');
-const exportPdfBtn = document.getElementById('exportPdfBtn');
-const exportJsonBtn = document.getElementById('exportJsonBtn');
-
-// Settings
-const captureClicksCheckbox = document.getElementById('captureClicks');
-const captureInputsCheckbox = document.getElementById('captureInputs');
-const captureNavigationCheckbox = document.getElementById('captureNavigation');
-const autoScreenshotCheckbox = document.getElementById('autoScreenshot');
-const enableAutoFillCheckbox = document.getElementById('enableAutoFill');
-const pauseBeforeSubmitCheckbox = document.getElementById('pauseBeforeSubmit');
-const useRealisticDataCheckbox = document.getElementById('useRealisticData');
-const apiKeyInput = document.getElementById('apiKey');
+// DOM Elements - will be initialized after DOM loads
+let startBtn, stopBtn, statusIndicator, statusText, recordingInfo, exportSection;
+let screenshotCount, actionCount, durationElement;
+let analyzeBtn, exportPdfBtn, exportJsonBtn;
+let captureClicksCheckbox, captureInputsCheckbox, captureNavigationCheckbox;
+let autoScreenshotCheckbox, enableAutoFillCheckbox;
+let useRealisticDataCheckbox, apiKeyInput;
 
 // Initialize popup
 document.addEventListener('DOMContentLoaded', async () => {
-  await loadSettings();
-  await checkRecordingState();
-  attachEventListeners();
+  try {
+    console.log('DocBot popup loading...');
+
+    // Initialize DOM element references
+    startBtn = document.getElementById('startBtn');
+    stopBtn = document.getElementById('stopBtn');
+    statusIndicator = document.getElementById('statusIndicator');
+    statusText = document.getElementById('statusText');
+    recordingInfo = document.getElementById('recordingInfo');
+    exportSection = document.getElementById('exportSection');
+    screenshotCount = document.getElementById('screenshotCount');
+    actionCount = document.getElementById('actionCount');
+    durationElement = document.getElementById('duration');
+
+    analyzeBtn = document.getElementById('analyzeBtn');
+    exportPdfBtn = document.getElementById('exportPdfBtn');
+    exportJsonBtn = document.getElementById('exportJsonBtn');
+
+    captureClicksCheckbox = document.getElementById('captureClicks');
+    captureInputsCheckbox = document.getElementById('captureInputs');
+    captureNavigationCheckbox = document.getElementById('captureNavigation');
+    autoScreenshotCheckbox = document.getElementById('autoScreenshot');
+    enableAutoFillCheckbox = document.getElementById('enableAutoFill');
+    useRealisticDataCheckbox = document.getElementById('useRealisticData');
+    apiKeyInput = document.getElementById('apiKey');
+
+    console.log('DOM elements initialized');
+
+    await loadSettings();
+    console.log('Settings loaded');
+
+    await checkRecordingState();
+    console.log('Recording state checked');
+
+    attachEventListeners();
+    console.log('Event listeners attached');
+
+    // Force a repaint to fix Chrome rendering bug where popup doesn't show until alt-tab
+    // This is a workaround for a known Chrome issue
+    document.body.style.display = 'none';
+    document.body.offsetHeight; // Trigger reflow
+    document.body.style.display = '';
+
+    console.log('DocBot popup loaded successfully');
+  } catch (error) {
+    console.error('Error initializing popup:', error);
+    alert('Error loading DocBot popup: ' + error.message);
+  }
 });
 
 // Load settings from storage
@@ -43,7 +73,6 @@ async function loadSettings() {
     'captureNavigation',
     'autoScreenshot',
     'enableAutoFill',
-    'pauseBeforeSubmit',
     'useRealisticData',
     'apiKey'
   ]);
@@ -52,8 +81,7 @@ async function loadSettings() {
   captureInputsCheckbox.checked = settings.captureInputs !== false;
   captureNavigationCheckbox.checked = settings.captureNavigation !== false;
   autoScreenshotCheckbox.checked = settings.autoScreenshot !== false;
-  enableAutoFillCheckbox.checked = settings.enableAutoFill !== false;
-  pauseBeforeSubmitCheckbox.checked = settings.pauseBeforeSubmit !== false;
+  enableAutoFillCheckbox.checked = settings.enableAutoFill === true; // Default to OFF
   useRealisticDataCheckbox.checked = settings.useRealisticData !== false;
   apiKeyInput.value = settings.apiKey || '';
 }
@@ -66,7 +94,6 @@ async function saveSettings() {
     captureNavigation: captureNavigationCheckbox.checked,
     autoScreenshot: autoScreenshotCheckbox.checked,
     enableAutoFill: enableAutoFillCheckbox.checked,
-    pauseBeforeSubmit: pauseBeforeSubmitCheckbox.checked,
     useRealisticData: useRealisticDataCheckbox.checked,
     apiKey: apiKeyInput.value
   });
@@ -74,17 +101,23 @@ async function saveSettings() {
 
 // Check current recording state
 async function checkRecordingState() {
-  const state = await chrome.storage.local.get(['isRecording', 'recordingData', 'completedRecording']);
+  const state = await chrome.storage.local.get(['isRecording', 'recordingTabId', 'recordingData', 'completedRecording']);
 
-  if (state.isRecording) {
+  // Get current tab to check if this is the recording tab
+  const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  if (state.isRecording && state.recordingTabId === currentTab?.id) {
+    // This tab is actively being recorded
     isRecording = true;
     recordingData = state.recordingData;
     updateUIForRecording();
     startDurationTimer();
   } else if (state.completedRecording) {
+    // Recording completed, show export options
     recordingData = state.completedRecording;
     updateUIForCompleted();
   } else {
+    // No active recording or not this tab
     updateUIForIdle();
   }
 }
@@ -99,12 +132,25 @@ function attachEventListeners() {
 
   // Settings change listeners
   [captureClicksCheckbox, captureInputsCheckbox, captureNavigationCheckbox,
-   autoScreenshotCheckbox, enableAutoFillCheckbox, pauseBeforeSubmitCheckbox,
+   autoScreenshotCheckbox, enableAutoFillCheckbox,
    useRealisticDataCheckbox].forEach(checkbox => {
     checkbox.addEventListener('change', saveSettings);
   });
 
   apiKeyInput.addEventListener('change', saveSettings);
+
+  // Scroll settings into view when opened
+  const settingsDetails = document.querySelector('.settings details');
+  if (settingsDetails) {
+    settingsDetails.addEventListener('toggle', () => {
+      if (settingsDetails.open) {
+        // Wait for the accordion to expand, then scroll
+        setTimeout(() => {
+          settingsDetails.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 100);
+      }
+    });
+  }
 
   // Listen for recording updates from background
   chrome.runtime.onMessage.addListener((message) => {
@@ -137,7 +183,6 @@ async function handleStartRecording() {
     captureNavigation: captureNavigationCheckbox.checked,
     autoScreenshot: autoScreenshotCheckbox.checked,
     enableAutoFill: enableAutoFillCheckbox.checked,
-    pauseBeforeSubmit: pauseBeforeSubmitCheckbox.checked,
     useRealisticData: useRealisticDataCheckbox.checked
   };
 
@@ -188,6 +233,12 @@ async function handleAnalyze() {
   if (!apiKey) {
     alert('Please enter your Claude API key in the settings section.');
     return;
+  }
+
+  // Reload recording data from storage if not already loaded
+  if (!recordingData) {
+    const state = await chrome.storage.local.get('completedRecording');
+    recordingData = state.completedRecording;
   }
 
   if (!recordingData || !recordingData.actions || recordingData.actions.length === 0) {
@@ -266,6 +317,12 @@ async function handleAnalyze() {
 
 // Handle PDF export
 async function handleExportPdf() {
+  // Reload recording data from storage if not already loaded
+  if (!recordingData) {
+    const state = await chrome.storage.local.get('completedRecording');
+    recordingData = state.completedRecording;
+  }
+
   if (!recordingData || !recordingData.actions || recordingData.actions.length === 0) {
     alert('No recording data available to export.');
     return;
@@ -284,6 +341,12 @@ async function handleExportPdf() {
 
 // Handle JSON export
 async function handleExportJson() {
+  // Reload recording data from storage if not already loaded
+  if (!recordingData) {
+    const state = await chrome.storage.local.get('completedRecording');
+    recordingData = state.completedRecording;
+  }
+
   if (!recordingData || !recordingData.actions || recordingData.actions.length === 0) {
     alert('No recording data available to export.');
     return;

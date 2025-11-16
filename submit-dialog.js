@@ -21,16 +21,16 @@ const SubmitDialog = {
     this.overlayElement = document.createElement('div');
     this.overlayElement.id = 'docbot-submit-overlay';
     this.overlayElement.style.cssText = `
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(0, 0, 0, 0.7);
-      z-index: 999998;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      background: rgba(0, 0, 0, 0.7) !important;
+      z-index: 2147483647 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
       animation: docbot-fade-in 0.2s ease;
     `;
 
@@ -38,13 +38,15 @@ const SubmitDialog = {
     this.dialogElement = document.createElement('div');
     this.dialogElement.id = 'docbot-submit-dialog';
     this.dialogElement.style.cssText = `
-      background: white;
-      border-radius: 12px;
-      padding: 30px;
-      max-width: 500px;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      position: relative !important;
+      background: white !important;
+      border-radius: 12px !important;
+      padding: 30px !important;
+      max-width: 500px !important;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3) !important;
       animation: docbot-slide-up 0.3s ease;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif !important;
+      z-index: 2147483647 !important;
     `;
 
     this.dialogElement.innerHTML = `
