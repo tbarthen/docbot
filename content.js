@@ -313,14 +313,27 @@
       const style = window.getComputedStyle(el);
       const rect = el.getBoundingClientRect();
 
+      // Special handling for Bootstrap collapse elements - check classes instead of height
+      const isBootstrapCollapse = el.classList.contains('collapse');
+      const isCollapsed = isBootstrapCollapse && (
+        !el.classList.contains('in') &&  // Bootstrap 3 uses 'in' class for expanded state
+        (el.getAttribute('aria-expanded') === 'false' || !el.getAttribute('aria-expanded'))
+      );
+
+      // Skip if it's a collapsed Bootstrap element
+      if (isBootstrapCollapse && isCollapsed) {
+        return;
+      }
+
       // Only include visible elements with significant size
       if (style.display !== 'none' &&
           style.visibility !== 'hidden' &&
           parseFloat(style.opacity) > 0 &&
           rect.width > 50 &&
-          rect.height > 50) {
-        // Create a simple signature: tag + classes + visible text snippet
-        const signature = `${el.tagName}:${el.className}:${el.textContent?.substring(0, 50) || ''}`;
+          (rect.height > 50 || (isBootstrapCollapse && !isCollapsed))) {
+        // Create a simple signature: tag + ID + classes + visible text snippet
+        // Include ID to differentiate between similar panels (e.g., accordion panels)
+        const signature = `${el.tagName}:${el.id || 'no-id'}:${el.className}:${el.textContent?.substring(0, 50) || ''}`;
         visibleElements.push(signature);
       }
     });
@@ -333,7 +346,7 @@
     // Detect when DOM stops changing after a click action
     let debounceTimer = null;
     let observer = null;
-    const STABILIZATION_DELAY = 500; // Wait 500ms after last change
+    const STABILIZATION_DELAY = 600; // Wait 600ms after last change (Bootstrap animations are 350ms)
     const MAX_WAIT = 2000; // Don't wait more than 2 seconds total
 
     // initialSnapshot is passed from handleClick - captured BEFORE the click was re-dispatched
@@ -373,7 +386,7 @@
     const resetDebounce = () => {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
-        console.log('DocBot: No DOM changes for 500ms, checking stability');
+        console.log('DocBot: No DOM changes for 600ms, checking stability');
         clearTimeout(maxTimeout);
         onStabilized();
       }, STABILIZATION_DELAY);
@@ -383,6 +396,11 @@
     observer = new MutationObserver((mutations) => {
       // Log what mutations we're seeing
       const meaningfulMutations = mutations.filter(m => {
+        // Check for Bootstrap accordion state changes
+        if (m.type === 'attributes' && m.attributeName === 'aria-expanded') {
+          console.log('DocBot: Detected accordion state change (aria-expanded):', m.target);
+          return true;
+        }
         // Check for visibility changes
         if (m.type === 'attributes' && (m.attributeName === 'style' || m.attributeName === 'class' || m.attributeName === 'hidden')) {
           const element = m.target;
@@ -414,7 +432,7 @@
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ['style', 'class', 'hidden']
+      attributeFilter: ['style', 'class', 'hidden', 'aria-expanded']
     });
 
     // Start the debounce timer
