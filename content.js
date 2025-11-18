@@ -251,6 +251,10 @@
 
     console.log(`DocBot: Click intercepted at viewport (${elementPosition.x}, ${elementPosition.y}), scroll: (${elementPosition.scrollX}, ${elementPosition.scrollY}), element:`, target);
 
+    // CAPTURE SNAPSHOT BEFORE CLICK - this is the "before" state
+    const beforeSnapshot = captureVisibleContentSnapshot();
+    console.log('DocBot: Captured BEFORE snapshot, length:', beforeSnapshot.length);
+
     // Send action and wait for screenshot, then re-dispatch the click
     sendAction('click', details, elementPosition, () => {
       // After screenshot is captured, re-dispatch the click to trigger original behavior
@@ -276,19 +280,17 @@
       target.dispatchEvent(newEvent);
 
       // Now detect when the page has finished responding to the click
-      // Small delay to ensure click has propagated before starting observation
-      setTimeout(() => {
-        detectPageStabilization(() => {
-          // Page has stabilized - capture full screenshot of new state
-          console.log('DocBot: Page stabilized, capturing full screenshot of new state');
-          sendAction('navigation', {
-            url: window.location.href,
-            title: document.title,
-            type: 'post_click_state',
-            trigger: details
-          }, null, null, true); // true = full screenshot
-        });
-      }, 100); // Give jQuery 100ms to start making changes
+      // Pass the BEFORE snapshot to compare against
+      detectPageStabilization(beforeSnapshot, () => {
+        // Page has stabilized - capture full screenshot of new state
+        console.log('DocBot: Page stabilized, capturing full screenshot of new state');
+        sendAction('navigation', {
+          url: window.location.href,
+          title: document.title,
+          type: 'post_click_state',
+          trigger: details
+        }, null, null, true); // true = full screenshot
+      });
 
       // Re-attach our listener after a short delay
       setTimeout(() => {
@@ -324,15 +326,14 @@
     return visibleElements.join('|');
   }
 
-  function detectPageStabilization(callback) {
+  function detectPageStabilization(initialSnapshot, callback) {
     // Detect when DOM stops changing after a click action
     let debounceTimer = null;
     let observer = null;
     const STABILIZATION_DELAY = 500; // Wait 500ms after last change
     const MAX_WAIT = 2000; // Don't wait more than 2 seconds total
 
-    // Snapshot initial visible content to detect if page actually changed
-    const initialSnapshot = captureVisibleContentSnapshot();
+    // initialSnapshot is passed from handleClick - captured BEFORE the click was re-dispatched
     let hasContentChanged = false;
 
     const cleanup = () => {
