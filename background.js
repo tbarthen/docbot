@@ -194,11 +194,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'captureAction':
       if (isRecording && sender.tab?.id === recordingTabId) {
+        console.log('DocBot [background]: Capturing action:', message.data.type);
         captureAction(message.data, sender.tab)
           .then(() => sendResponse({ success: true }))
           .catch(error => sendResponse({ success: false, error: error.message }));
         return true; // Keep channel open for async response
       } else {
+        console.log('DocBot [background]: SKIPPING action capture - isRecording:', isRecording, 'sender.tab.id:', sender.tab?.id, 'recordingTabId:', recordingTabId);
         sendResponse({ success: true });
       }
       break;
