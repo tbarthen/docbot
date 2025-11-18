@@ -110,6 +110,9 @@
 
       // Capture form submissions to detect same-page reloads
       captureFormSubmissions();
+
+      // Capture final state before page unloads (e.g., form submit → new page)
+      window.addEventListener('beforeunload', handleBeforeUnload);
     }
 
     // Listen for recording stop
@@ -542,6 +545,21 @@
     }, true);
   }
 
+  function handleBeforeUnload(event) {
+    // Capture final screenshot before page navigates away
+    console.log('DocBot: Page unloading, capturing final state');
+
+    const details = {
+      url: window.location.href,
+      title: document.title,
+      type: 'page_unload',
+      destination: 'unknown' // We don't know where we're going yet
+    };
+
+    // Send synchronously to ensure it captures before unload
+    sendAction('navigation', details, null, null, true); // true = full screenshot
+  }
+
   function sendAction(type, details, elementPosition = null, callback = null, captureFullScreenshot = false) {
     // Check if extension context is still valid
     if (!chrome.runtime?.id) {
@@ -609,6 +627,7 @@
     document.removeEventListener('click', handleClick, true);
     document.removeEventListener('input', handleInput, true);
     document.removeEventListener('change', handleChange, true);
+    window.removeEventListener('beforeunload', handleBeforeUnload);
   }
 
   // Expose cleanup function for re-initialization
