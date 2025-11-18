@@ -541,6 +541,32 @@
         type: 'popstate'
       });
     });
+
+    // Capture hash navigation (common in custom SPAs with Handlebars, Require.js, etc.)
+    window.addEventListener('hashchange', (event) => {
+      console.log('DocBot: Hash navigation detected', {
+        oldURL: event.oldURL,
+        newURL: event.newURL,
+        hash: window.location.hash
+      });
+
+      // Capture snapshot before view changes
+      const beforeSnapshot = captureVisibleContentSnapshot();
+
+      // Wait for the SPA to render the new view
+      detectPageStabilization(beforeSnapshot, () => {
+        console.log('DocBot: Hash navigation completed, capturing new view');
+
+        sendAction('navigation', {
+          url: window.location.href,
+          title: document.title,
+          type: 'hashchange',
+          hash: window.location.hash,
+          oldURL: event.oldURL,
+          newURL: event.newURL
+        }, null, null, true); // Capture full screenshot of new view
+      });
+    });
   }
 
   function captureFormSubmissions() {
