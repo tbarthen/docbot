@@ -41,10 +41,13 @@ initScreenshotDB().catch(console.error);
 
 // Create context menu on installation
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: 'docbot-autofill-field',
-    title: 'Auto-fill this field',
-    contexts: ['editable']
+  // Remove existing context menu if it exists (prevents duplicate errors on reload)
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: 'docbot-autofill-field',
+      title: 'Auto-fill this field',
+      contexts: ['editable']
+    });
   });
 });
 
@@ -184,15 +187,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
 
     case 'stopRecording':
-      stopRecording();
-      sendResponse({ success: true });
-      break;
+      stopRecording()
+        .then(() => sendResponse({ success: true, data: recordingData }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true; // Keep channel open for async response
 
     case 'captureAction':
       if (isRecording && sender.tab?.id === recordingTabId) {
-        captureAction(message.data, sender.tab);
+        captureAction(message.data, sender.tab)
+          .then(() => sendResponse({ success: true }))
+          .catch(error => sendResponse({ success: false, error: error.message }));
+        return true; // Keep channel open for async response
+      } else {
+        sendResponse({ success: true });
       }
-      sendResponse({ success: true });
       break;
 
     case 'analyzeRecording':
@@ -289,7 +297,7 @@ async function startRecording(settings) {
   });
 }
 
-function stopRecording() {
+async function stopRecording() {
   isRecording = false;
   recordingTabId = null;
   recordingData.endTime = Date.now();
@@ -297,12 +305,21 @@ function stopRecording() {
   // Clear badge when recording stops
   chrome.action.setBadgeText({ text: '' });
 
+  console.log('DocBot [background]: Stopping recording with data:', {
+    actions: recordingData.actions?.length,
+    screenshots: recordingData.screenshots?.length,
+    startTime: recordingData.startTime,
+    endTime: recordingData.endTime
+  });
+
   // Save completed recording
-  chrome.storage.local.set({
+  await chrome.storage.local.set({
     isRecording: false,
     recordingTabId: null,
     completedRecording: recordingData
   });
+
+  console.log('DocBot [background]: Recording saved to completedRecording');
 }
 
 async function captureAction(actionData, tab) {
@@ -385,9 +402,22 @@ async function captureScreenshot(tabId, associatedAction = null, shouldCrop = fa
 
     // Capture screenshot immediately to match the exact state when coordinates were captured
     // No delay needed since we removed the on-page indicator
+
+    // Get quality setting from storage
+    const qualitySettings = await chrome.storage.local.get('screenshotQuality');
+    const qualitySetting = qualitySettings.screenshotQuality || 'medium';
+
+    // Map quality setting to JPEG quality value
+    const qualityMap = {
+      'high': 90,   // Best quality, ~7-8 MB
+      'medium': 70, // Balanced, ~3-4 MB
+      'low': 50     // Smallest, ~2 MB
+    };
+    const jpegQuality = qualityMap[qualitySetting] || 70;
+
     let dataUrl = await chrome.tabs.captureVisibleTab(null, {
       format: 'jpeg',
-      quality: 90 // High quality since we're using IndexedDB with large quota
+      quality: jpegQuality
     });
 
     console.log(`DocBot [background]: Screenshot captured (${shouldCrop ? 'CROP' : 'FULL'})`);
