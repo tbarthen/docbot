@@ -83,6 +83,17 @@
             Auto Screenshot on Actions
           </label>
           <hr style="margin: 12px 0; border: none; border-top: 1px solid #e9ecef;">
+          <h4 style="margin: 12px 0 8px 0; font-size: 13px; color: #495057;">Screenshot Quality</h4>
+          <div style="margin-bottom: 12px;">
+            <label for="screenshotQuality" style="display: block; margin-bottom: 4px;">PDF Export Quality:</label>
+            <select id="screenshotQuality" style="width: 100%; padding: 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;">
+              <option value="high">High Quality (best for AI analysis, ~7-8 MB)</option>
+              <option value="medium" selected>Medium Quality (balanced, ~3-4 MB)</option>
+              <option value="low">Low Quality (smallest, ~2 MB)</option>
+            </select>
+            <small style="color: #666; font-size: 11px;">Lower quality = smaller file size for easier sharing</small>
+          </div>
+          <hr style="margin: 12px 0; border: none; border-top: 1px solid #e9ecef;">
           <h4 style="margin: 12px 0 8px 0; font-size: 13px; color: #495057;">Auto-Fill Settings</h4>
           <label>
             <input type="checkbox" id="enableAutoFill">

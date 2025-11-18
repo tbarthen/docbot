@@ -11,7 +11,7 @@ let screenshotCount, actionCount, durationElement;
 let analyzeBtn, exportPdfBtn, exportJsonBtn;
 let captureClicksCheckbox, captureInputsCheckbox, captureNavigationCheckbox;
 let autoScreenshotCheckbox, enableAutoFillCheckbox;
-let useRealisticDataCheckbox, apiKeyInput;
+let useRealisticDataCheckbox, apiKeyInput, screenshotQualitySelect;
 
 // Initialize popup
 document.addEventListener('DOMContentLoaded', async () => {
@@ -40,6 +40,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     enableAutoFillCheckbox = document.getElementById('enableAutoFill');
     useRealisticDataCheckbox = document.getElementById('useRealisticData');
     apiKeyInput = document.getElementById('apiKey');
+    screenshotQualitySelect = document.getElementById('screenshotQuality');
 
     console.log('DOM elements initialized');
 
@@ -74,7 +75,8 @@ async function loadSettings() {
     'autoScreenshot',
     'enableAutoFill',
     'useRealisticData',
-    'apiKey'
+    'apiKey',
+    'screenshotQuality'
   ]);
 
   captureClicksCheckbox.checked = settings.captureClicks !== false;
@@ -84,6 +86,7 @@ async function loadSettings() {
   enableAutoFillCheckbox.checked = settings.enableAutoFill === true; // Default to OFF
   useRealisticDataCheckbox.checked = settings.useRealisticData !== false;
   apiKeyInput.value = settings.apiKey || '';
+  screenshotQualitySelect.value = settings.screenshotQuality || 'medium'; // Default to medium
 }
 
 // Save settings to storage
@@ -95,7 +98,8 @@ async function saveSettings() {
     autoScreenshot: autoScreenshotCheckbox.checked,
     enableAutoFill: enableAutoFillCheckbox.checked,
     useRealisticData: useRealisticDataCheckbox.checked,
-    apiKey: apiKeyInput.value
+    apiKey: apiKeyInput.value,
+    screenshotQuality: screenshotQualitySelect.value
   });
 }
 
@@ -138,6 +142,7 @@ function attachEventListeners() {
   });
 
   apiKeyInput.addEventListener('change', saveSettings);
+  screenshotQualitySelect.addEventListener('change', saveSettings);
 
   // Scroll settings into view when opened
   const settingsDetails = document.querySelector('.settings details');
@@ -206,17 +211,41 @@ async function handleStartRecording() {
 // Handle stop recording
 async function handleStopRecording() {
   try {
+    console.log('DocBot: Stopping recording...');
     const response = await chrome.runtime.sendMessage({
       action: 'stopRecording'
     });
+
+    console.log('DocBot: Stop recording response:', response);
 
     if (response.success) {
       isRecording = false;
       stopDurationTimer();
 
-      // Get completed recording data
-      const state = await chrome.storage.local.get('completedRecording');
-      recordingData = state.completedRecording;
+      // First try to get data from response, then from storage
+      if (response.data) {
+        recordingData = response.data;
+        console.log('DocBot: Using recording data from response:', {
+          hasData: !!recordingData,
+          actionsCount: recordingData?.actions?.length,
+          screenshotsCount: recordingData?.screenshots?.length
+        });
+      } else {
+        // Fallback to storage
+        const state = await chrome.storage.local.get('completedRecording');
+        recordingData = state.completedRecording;
+
+        console.log('DocBot: Retrieved completed recording from storage:', {
+          hasData: !!recordingData,
+          actionsCount: recordingData?.actions?.length,
+          screenshotsCount: recordingData?.screenshots?.length
+        });
+      }
+
+      if (!recordingData || !recordingData.actions || recordingData.actions.length === 0) {
+        console.error('DocBot: No valid recording data found!');
+        alert('Warning: No actions were recorded. Try recording again and perform some interactions.');
+      }
 
       updateUIForCompleted();
     }
@@ -321,7 +350,16 @@ async function handleExportPdf() {
   if (!recordingData) {
     const state = await chrome.storage.local.get('completedRecording');
     recordingData = state.completedRecording;
+    console.log('DocBot: Loaded recording data from storage:', recordingData);
   }
+
+  console.log('DocBot: Exporting PDF with data:', {
+    hasData: !!recordingData,
+    hasActions: !!recordingData?.actions,
+    actionsLength: recordingData?.actions?.length,
+    hasScreenshots: !!recordingData?.screenshots,
+    screenshotsLength: recordingData?.screenshots?.length
+  });
 
   if (!recordingData || !recordingData.actions || recordingData.actions.length === 0) {
     alert('No recording data available to export.');
