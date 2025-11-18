@@ -39,6 +39,35 @@ function initScreenshotDB() {
 // Initialize DB on startup
 initScreenshotDB().catch(console.error);
 
+// Restore recording state on service worker startup (handles service worker restarts)
+async function restoreRecordingState() {
+  try {
+    const state = await chrome.storage.local.get(['isRecording', 'recordingTabId', 'recordingData']);
+
+    if (state.isRecording && state.recordingData) {
+      console.log('DocBot [background]: Restoring recording state after service worker restart');
+      isRecording = state.isRecording;
+      recordingTabId = state.recordingTabId;
+      recordingData = state.recordingData;
+
+      console.log('DocBot [background]: Restored data:', {
+        actions: recordingData.actions?.length,
+        screenshots: recordingData.screenshots?.length,
+        tabId: recordingTabId
+      });
+
+      // Restore badge
+      chrome.action.setBadgeText({ text: 'REC' });
+      chrome.action.setBadgeBackgroundColor({ color: '#dc3545' });
+    }
+  } catch (error) {
+    console.error('DocBot [background]: Failed to restore recording state:', error);
+  }
+}
+
+// Restore state on service worker startup
+restoreRecordingState();
+
 // Create context menu on installation
 chrome.runtime.onInstalled.addListener(() => {
   // Remove existing context menu if it exists (prevents duplicate errors on reload)
@@ -302,6 +331,19 @@ async function startRecording(settings) {
 async function stopRecording() {
   isRecording = false;
   recordingTabId = null;
+
+  // Defensive check: ensure recordingData exists
+  if (!recordingData) {
+    console.error('DocBot [background]: ERROR - recordingData is null/undefined when stopping!');
+    recordingData = {
+      startTime: Date.now(),
+      endTime: Date.now(),
+      screenshots: [],
+      actions: [],
+      settings: {}
+    };
+  }
+
   recordingData.endTime = Date.now();
 
   // Clear badge when recording stops
