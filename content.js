@@ -220,6 +220,11 @@
   }
 
   function handleClick(event) {
+    // INTERCEPT: Prevent the click from propagating until we capture screenshot
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+
     const target = event.target;
     const rect = target.getBoundingClientRect();
 
@@ -244,9 +249,172 @@
       scrollY: window.scrollY
     };
 
-    console.log(`DocBot: Click captured at viewport (${elementPosition.x}, ${elementPosition.y}), scroll: (${elementPosition.scrollX}, ${elementPosition.scrollY}), element:`, target);
+    console.log(`DocBot: Click intercepted at viewport (${elementPosition.x}, ${elementPosition.y}), scroll: (${elementPosition.scrollX}, ${elementPosition.scrollY}), element:`, target);
 
-    sendAction('click', details, elementPosition);
+    // Send action and wait for screenshot, then re-dispatch the click
+    sendAction('click', details, elementPosition, () => {
+      // After screenshot is captured, re-dispatch the click to trigger original behavior
+      console.log('DocBot: Re-dispatching click to trigger original behavior');
+
+      // Remove our listener temporarily to avoid infinite loop
+      document.removeEventListener('click', handleClick, true);
+
+      // Re-dispatch the click event
+      const newEvent = new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        button: event.button,
+        buttons: event.buttons,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey
+      });
+      target.dispatchEvent(newEvent);
+
+      // Now detect when the page has finished responding to the click
+      // Small delay to ensure click has propagated before starting observation
+      setTimeout(() => {
+        detectPageStabilization(() => {
+          // Page has stabilized - capture full screenshot of new state
+          console.log('DocBot: Page stabilized, capturing full screenshot of new state');
+          sendAction('navigation', {
+            url: window.location.href,
+            title: document.title,
+            type: 'post_click_state',
+            trigger: details
+          }, null, null, true); // true = full screenshot
+        });
+      }, 100); // Give jQuery 100ms to start making changes
+
+      // Re-attach our listener after a short delay
+      setTimeout(() => {
+        document.addEventListener('click', handleClick, true);
+      }, 100);
+    });
+  }
+
+
+  function captureVisibleContentSnapshot() {
+    // Capture a snapshot of all visible text content to detect changes
+    // This helps detect jQuery show/hide that might not trigger MutationObserver
+    const visibleElements = [];
+
+    // Get all elements that might have visible content
+    document.querySelectorAll('div, form, section, main, article, fieldset, p, span, label').forEach(el => {
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+
+      // Only include visible elements with significant size
+      if (style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          parseFloat(style.opacity) > 0 &&
+          rect.width > 50 &&
+          rect.height > 50) {
+        // Create a simple signature: tag + classes + visible text snippet
+        const signature = `${el.tagName}:${el.className}:${el.textContent?.substring(0, 50) || ''}`;
+        visibleElements.push(signature);
+      }
+    });
+
+    // Return concatenated signatures - if content changes, this will change
+    return visibleElements.join('|');
+  }
+
+  function detectPageStabilization(callback) {
+    // Detect when DOM stops changing after a click action
+    let debounceTimer = null;
+    let observer = null;
+    const STABILIZATION_DELAY = 500; // Wait 500ms after last change
+    const MAX_WAIT = 2000; // Don't wait more than 2 seconds total
+
+    // Snapshot initial visible content to detect if page actually changed
+    const initialSnapshot = captureVisibleContentSnapshot();
+    let hasContentChanged = false;
+
+    const cleanup = () => {
+      if (observer) observer.disconnect();
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+
+    const onStabilized = () => {
+      cleanup();
+
+      // Before calling callback, verify content actually changed
+      const finalSnapshot = captureVisibleContentSnapshot();
+      hasContentChanged = (finalSnapshot !== initialSnapshot);
+
+      console.log('DocBot: Content changed:', hasContentChanged,
+                  'Initial length:', initialSnapshot.length,
+                  'Final length:', finalSnapshot.length);
+
+      // Only capture full screenshot if content actually changed
+      if (hasContentChanged) {
+        callback();
+      } else {
+        console.log('DocBot: No significant content change detected, skipping full screenshot');
+      }
+    };
+
+    // Set maximum timeout
+    const maxTimeout = setTimeout(() => {
+      console.log('DocBot: Max wait time reached, checking if content changed');
+      onStabilized();
+    }, MAX_WAIT);
+
+    // Reset debounce timer on any DOM change
+    const resetDebounce = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        console.log('DocBot: No DOM changes for 500ms, checking stability');
+        clearTimeout(maxTimeout);
+        onStabilized();
+      }, STABILIZATION_DELAY);
+    };
+
+    // Observe DOM changes
+    observer = new MutationObserver((mutations) => {
+      // Log what mutations we're seeing
+      const meaningfulMutations = mutations.filter(m => {
+        // Check for visibility changes
+        if (m.type === 'attributes' && (m.attributeName === 'style' || m.attributeName === 'class' || m.attributeName === 'hidden')) {
+          const element = m.target;
+          if (element.nodeType === Node.ELEMENT_NODE) {
+            const isLargeElement = element.offsetHeight > 50 || element.offsetWidth > 50;
+            if (isLargeElement) {
+              console.log('DocBot: Detected visibility change on large element:', element);
+              return true;
+            }
+          }
+        }
+        // Check for significant DOM structure changes
+        if (m.type === 'childList' && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
+          console.log('DocBot: Detected DOM structure change:', m.addedNodes.length, 'added,', m.removedNodes.length, 'removed');
+          return true;
+        }
+        return false;
+      });
+
+      // Only reset if we see meaningful changes
+      if (meaningfulMutations.length > 0) {
+        console.log('DocBot: Page still changing, resetting stabilization timer');
+        resetDebounce();
+      }
+    });
+
+    // Observe body for changes
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['style', 'class', 'hidden']
+    });
+
+    // Start the debounce timer
+    resetDebounce();
   }
 
   function handleInput(event) {
@@ -373,10 +541,11 @@
     }, true);
   }
 
-  function sendAction(type, details, elementPosition = null) {
+  function sendAction(type, details, elementPosition = null, callback = null, captureFullScreenshot = false) {
     // Check if extension context is still valid
     if (!chrome.runtime?.id) {
       console.log('DocBot: Extension context invalidated, skipping action capture');
+      if (callback) callback();
       return;
     }
 
@@ -386,16 +555,22 @@
         data: {
           type,
           details,
-          elementPosition
+          elementPosition,
+          captureScreenshot: captureFullScreenshot // Tell background to capture full screenshot for navigation
         }
       }, (response) => {
         if (chrome.runtime.lastError) {
           console.log('DocBot: Error sending action:', chrome.runtime.lastError.message);
         }
+        // Invoke callback after screenshot is captured
+        if (callback) {
+          callback();
+        }
       });
     } catch (error) {
       // Extension was reloaded or context is invalid
       console.log('DocBot: Failed to send action, extension may have been reloaded:', error);
+      if (callback) callback();
     }
   }
 
