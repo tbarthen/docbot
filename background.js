@@ -625,38 +625,44 @@ async function cropToClickArea(imageDataUrl, position) {
       const blob = await response.blob();
       const imageBitmap = await createImageBitmap(blob);
 
-      // Define crop area: 400x400 pixels centered on click
-      const cropSize = 400;
-      const halfSize = cropSize / 2;
+      // Define crop area: 1200px wide × 400px tall (3x wider to capture context)
+      // Since buttons are often on the right edge, extend more to the left to capture
+      // labels, text fields, and other contextual elements on the same horizontal line
+      const cropWidth = 1200;
+      const cropHeight = 400;
+      const halfHeight = cropHeight / 2;
 
-      // Calculate crop bounds, ensuring we don't go outside image bounds
-      let cropX = Math.max(0, position.x - halfSize);
-      let cropY = Math.max(0, position.y - halfSize);
+      // Position click point at 75% from left (900px from left edge in a 1200px crop)
+      // This gives 900px to the left of the click and 300px to the right
+      const clickOffsetFromLeft = cropWidth * 0.75;
+
+      // Calculate crop bounds
+      let cropX = Math.max(0, position.x - clickOffsetFromLeft);
+      let cropY = Math.max(0, position.y - halfHeight);
 
       // Adjust if crop would exceed image dimensions
-      if (cropX + cropSize > imageBitmap.width) {
-        cropX = Math.max(0, imageBitmap.width - cropSize);
+      if (cropX + cropWidth > imageBitmap.width) {
+        cropX = Math.max(0, imageBitmap.width - cropWidth);
       }
-      if (cropY + cropSize > imageBitmap.height) {
-        cropY = Math.max(0, imageBitmap.height - cropSize);
+      if (cropY + cropHeight > imageBitmap.height) {
+        cropY = Math.max(0, imageBitmap.height - cropHeight);
       }
 
       // Ensure crop dimensions don't exceed image
-      const actualWidth = Math.min(cropSize, imageBitmap.width - cropX);
-      const actualHeight = Math.min(cropSize, imageBitmap.height - cropY);
+      let actualWidth = Math.min(cropWidth, imageBitmap.width - cropX);
+      let actualHeight = Math.min(cropHeight, imageBitmap.height - cropY);
 
       // Calculate where the click indicator should appear in the cropped image
-      // It's the original position minus the crop offset
       const indicatorPosition = {
         x: position.x - cropX,
         y: position.y - cropY
       };
 
       console.log(`DocBot [crop]: Image size: ${imageBitmap.width}x${imageBitmap.height}, Click position: (${position.x}, ${position.y})`);
-      console.log(`DocBot [crop]: Cropping region: (${cropX}, ${cropY}) to (${cropX + actualWidth}, ${cropY + actualHeight})`);
-      console.log(`DocBot [crop]: Indicator will be at (${indicatorPosition.x}, ${indicatorPosition.y}) in cropped image`);
+      console.log(`DocBot [crop]: Initial crop region: (${cropX}, ${cropY}) ${actualWidth}x${actualHeight}`);
+      console.log(`DocBot [crop]: Indicator at (${indicatorPosition.x}, ${indicatorPosition.y}) in crop`);
 
-      // Create cropped canvas
+      // Create initial cropped canvas
       const canvas = new OffscreenCanvas(actualWidth, actualHeight);
       const ctx = canvas.getContext('2d');
 
@@ -667,8 +673,47 @@ async function cropToClickArea(imageDataUrl, position) {
         0, 0, actualWidth, actualHeight          // Destination rectangle
       );
 
+      // Trim whitespace from right edge (common when buttons are at right edge)
+      const imageData = ctx.getImageData(0, 0, actualWidth, actualHeight);
+      const data = imageData.data;
+
+      let maxContentX = 0;
+      // Scan from right to left to find last column with content
+      for (let x = actualWidth - 1; x >= 0; x--) {
+        let hasContent = false;
+        for (let y = 0; y < actualHeight; y += 4) { // Sample every 4th pixel
+          const i = (y * actualWidth + x) * 4;
+          const r = data[i];
+          const g = data[i + 1];
+          const b = data[i + 2];
+
+          // Consider pixel as content if not near-white (threshold 245)
+          if (r < 245 || g < 245 || b < 245) {
+            hasContent = true;
+            break;
+          }
+        }
+        if (hasContent) {
+          maxContentX = x;
+          break;
+        }
+      }
+
+      // Add 20px padding after last content
+      const trimmedWidth = Math.min(actualWidth, maxContentX + 20);
+
+      console.log(`DocBot [crop]: Trimmed width from ${actualWidth}px to ${trimmedWidth}px (removed ${actualWidth - trimmedWidth}px whitespace)`);
+
+      // Create final trimmed canvas if we actually trimmed anything
+      let finalCanvas = canvas;
+      if (trimmedWidth < actualWidth) {
+        finalCanvas = new OffscreenCanvas(trimmedWidth, actualHeight);
+        const finalCtx = finalCanvas.getContext('2d');
+        finalCtx.drawImage(canvas, 0, 0, trimmedWidth, actualHeight, 0, 0, trimmedWidth, actualHeight);
+      }
+
       // Convert to data URL
-      const resultBlob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.9 });
+      const resultBlob = await finalCanvas.convertToBlob({ type: 'image/jpeg', quality: 0.9 });
       const reader = new FileReader();
       reader.onloadend = () => resolve({
         dataUrl: reader.result,
@@ -679,7 +724,7 @@ async function cropToClickArea(imageDataUrl, position) {
       console.error('Failed to crop screenshot:', error);
       resolve({
         dataUrl: imageDataUrl,
-        indicatorPosition: { x: 200, y: 200 } // Center fallback
+        indicatorPosition: { x: 900, y: 200 } // 75% from left, centered vertically
       });
     }
   });
