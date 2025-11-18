@@ -439,6 +439,107 @@
     resetDebounce();
   }
 
+  function detectPageStabilizationExtended(initialSnapshot, callback) {
+    // Extended version for hash navigation that waits longer for spinners to disappear
+    let debounceTimer = null;
+    let observer = null;
+    const STABILIZATION_DELAY = 1000; // Wait 1 second after last change (for spinners)
+    const MAX_WAIT = 5000; // Wait up to 5 seconds for complex SPA transitions
+    const MIN_WAIT = 1500; // Minimum wait to ensure spinner has time to appear and disappear
+
+    let hasContentChanged = false;
+    let startTime = Date.now();
+
+    const cleanup = () => {
+      if (observer) observer.disconnect();
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+
+    const onStabilized = () => {
+      cleanup();
+
+      // Check if we've waited the minimum time
+      const elapsed = Date.now() - startTime;
+      if (elapsed < MIN_WAIT) {
+        console.log('DocBot: Hash navigation - waiting minimum time before capturing');
+        setTimeout(onStabilized, MIN_WAIT - elapsed);
+        return;
+      }
+
+      // Verify content actually changed
+      const finalSnapshot = captureVisibleContentSnapshot();
+      hasContentChanged = (finalSnapshot !== initialSnapshot);
+
+      console.log('DocBot: Hash navigation stabilized:', hasContentChanged,
+                  'Initial length:', initialSnapshot.length,
+                  'Final length:', finalSnapshot.length,
+                  'Elapsed:', elapsed, 'ms');
+
+      // Only capture full screenshot if content actually changed
+      if (hasContentChanged) {
+        callback();
+      } else {
+        console.log('DocBot: No significant content change detected after hash navigation');
+      }
+    };
+
+    // Set maximum timeout
+    const maxTimeout = setTimeout(() => {
+      console.log('DocBot: Hash navigation max wait time reached');
+      onStabilized();
+    }, MAX_WAIT);
+
+    // Reset debounce timer on any DOM change
+    const resetDebounce = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        console.log('DocBot: Hash navigation - no DOM changes for 1s, checking stability');
+        clearTimeout(maxTimeout);
+        onStabilized();
+      }, STABILIZATION_DELAY);
+    };
+
+    // Observe DOM changes (same as regular stabilization)
+    observer = new MutationObserver((mutations) => {
+      const meaningfulMutations = mutations.filter(m => {
+        if (m.type === 'attributes' && m.attributeName === 'aria-expanded') {
+          console.log('DocBot: Hash nav - detected accordion state change');
+          return true;
+        }
+        if (m.type === 'attributes' && (m.attributeName === 'style' || m.attributeName === 'class' || m.attributeName === 'hidden')) {
+          const element = m.target;
+          if (element.nodeType === Node.ELEMENT_NODE) {
+            const isLargeElement = element.offsetHeight > 50 || element.offsetWidth > 50;
+            if (isLargeElement) {
+              console.log('DocBot: Hash nav - detected visibility change on large element');
+              return true;
+            }
+          }
+        }
+        if (m.type === 'childList' && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
+          console.log('DocBot: Hash nav - detected DOM structure change');
+          return true;
+        }
+        return false;
+      });
+
+      if (meaningfulMutations.length > 0) {
+        console.log('DocBot: Hash nav - page still changing, resetting timer');
+        resetDebounce();
+      }
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['style', 'class', 'hidden', 'aria-expanded']
+    });
+
+    // Start the debounce timer
+    resetDebounce();
+  }
+
   function handleInput(event) {
     const target = event.target;
     const rect = target.getBoundingClientRect();
@@ -553,8 +654,8 @@
       // Capture snapshot before view changes
       const beforeSnapshot = captureVisibleContentSnapshot();
 
-      // Wait for the SPA to render the new view
-      detectPageStabilization(beforeSnapshot, () => {
+      // Wait for the SPA to render the new view (with extended timeout for spinners)
+      detectPageStabilizationExtended(beforeSnapshot, () => {
         console.log('DocBot: Hash navigation completed, capturing new view');
 
         sendAction('navigation', {
