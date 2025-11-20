@@ -223,12 +223,30 @@
   }
 
   function handleClick(event) {
+    const target = event.target;
+
+    // SPECIAL CASE: Let javascript: URLs pass through without interception
+    // These URLs are blocked by CSP when re-dispatched or executed via eval/script injection
+    if (target.tagName === 'A' && target.href && target.href.startsWith('javascript:')) {
+      console.log('DocBot: Allowing javascript: URL to execute naturally (CSP prevents interception)');
+      // Don't preventDefault - let the browser handle it normally
+      // We'll still log the action but won't capture a screenshot
+      const details = {
+        tagName: target.tagName,
+        id: target.id || null,
+        className: target.className || null,
+        text: getElementText(target),
+        href: target.href || null,
+        type: 'javascript-url'
+      };
+      sendAction('click', details, null, null, false);
+      return; // Let the click proceed naturally
+    }
+
     // INTERCEPT: Prevent the click from propagating until we capture screenshot
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-
-    const target = event.target;
     const rect = target.getBoundingClientRect();
 
     const details = {
@@ -266,39 +284,21 @@
       // Remove our listener temporarily to avoid infinite loop
       document.removeEventListener('click', handleClick, true);
 
-      // Check if this is a javascript: URL (CSP blocks these when re-dispatched)
-      if (target.tagName === 'A' && target.href && target.href.startsWith('javascript:')) {
-        console.log('DocBot: Executing javascript: URL by injecting into page context to avoid CSP block');
-        try {
-          // Extract the JavaScript code
-          const jsCode = decodeURIComponent(target.href.substring(11)); // Remove 'javascript:'
-
-          // Inject and execute in the page's main context (not content script context)
-          // This bypasses CSP restrictions on content scripts
-          const script = document.createElement('script');
-          script.textContent = jsCode;
-          document.documentElement.appendChild(script);
-          script.remove();
-        } catch (error) {
-          console.error('DocBot: Failed to execute javascript: URL:', error);
-        }
-      } else {
-        // Re-dispatch the click event normally
-        const newEvent = new MouseEvent('click', {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: event.clientX,
-          clientY: event.clientY,
-          button: event.button,
-          buttons: event.buttons,
-          ctrlKey: event.ctrlKey,
-          shiftKey: event.shiftKey,
-          altKey: event.altKey,
-          metaKey: event.metaKey
-        });
-        target.dispatchEvent(newEvent);
-      }
+      // Re-dispatch the click event to trigger original behavior
+      const newEvent = new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        button: event.button,
+        buttons: event.buttons,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey
+      });
+      target.dispatchEvent(newEvent);
 
       // Now detect when the page has finished responding to the click
       // Pass the BEFORE snapshot to compare against
