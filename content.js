@@ -222,16 +222,26 @@
     }, 1500);
   }
 
+  // Track if we're currently processing a javascript: URL to avoid re-interception
+  let processingJavascriptUrl = false;
+
   function handleClick(event) {
     const target = event.target;
     const rect = target.getBoundingClientRect();
 
     // SPECIAL CASE: javascript: URLs need special handling due to CSP restrictions
-    // We'll capture the screenshot but let the click execute naturally
+    // For the first click, capture screenshot but don't execute yet
+    // For the second click (after screenshot), let it pass through
     if (target.tagName === 'A' && target.href && target.href.startsWith('javascript:')) {
-      console.log('DocBot: javascript: URL detected - capturing screenshot then allowing natural execution');
+      if (processingJavascriptUrl) {
+        // This is the re-dispatched click, let it through naturally
+        console.log('DocBot: Allowing javascript: URL to execute naturally');
+        processingJavascriptUrl = false;
+        return; // Let the browser handle it
+      }
 
-      // Prevent default temporarily to capture screenshot
+      // First click - capture screenshot then re-trigger
+      console.log('DocBot: javascript: URL detected - capturing screenshot first');
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
@@ -254,23 +264,26 @@
         scrollY: window.scrollY
       };
 
-      // Capture screenshot, then trigger the javascript: URL
+      // Capture screenshot, then manually invoke the javascript: URL
       sendAction('click', details, elementPosition, () => {
-        console.log('DocBot: Screenshot captured, now executing javascript: URL by simulating direct click');
+        console.log('DocBot: Screenshot captured, now executing javascript: URL code directly');
 
-        // Remove our listener temporarily
-        document.removeEventListener('click', handleClick, true);
+        // Extract and execute the JavaScript code directly in a way that bypasses CSP
+        // We'll use Function constructor which may work where eval doesn't
+        try {
+          const jsCode = decodeURIComponent(target.href.substring(11)); // Remove 'javascript:'
 
-        // Create a new click that will be handled by the browser natively
-        // Use isTrusted workaround by clicking the element directly
-        setTimeout(() => {
-          target.click(); // Direct click bypasses our listener and CSP restrictions
-        }, 10);
-
-        // Re-attach our listener
-        setTimeout(() => {
-          document.addEventListener('click', handleClick, true);
-        }, 100);
+          // Try to execute using Function constructor (different from eval, sometimes bypasses CSP)
+          const fn = new Function(jsCode);
+          fn.call(window);
+        } catch (error) {
+          console.error('DocBot: Failed to execute javascript: URL:', error);
+          // If that fails, try the flag approach to let the next click through
+          processingJavascriptUrl = true;
+          setTimeout(() => {
+            target.click();
+          }, 10);
+        }
       });
       return;
     }
