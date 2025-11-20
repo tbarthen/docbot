@@ -266,21 +266,34 @@
       // Remove our listener temporarily to avoid infinite loop
       document.removeEventListener('click', handleClick, true);
 
-      // Re-dispatch the click event
-      const newEvent = new MouseEvent('click', {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        clientX: event.clientX,
-        clientY: event.clientY,
-        button: event.button,
-        buttons: event.buttons,
-        ctrlKey: event.ctrlKey,
-        shiftKey: event.shiftKey,
-        altKey: event.altKey,
-        metaKey: event.metaKey
-      });
-      target.dispatchEvent(newEvent);
+      // Check if this is a javascript: URL (CSP blocks these when re-dispatched)
+      if (target.tagName === 'A' && target.href && target.href.startsWith('javascript:')) {
+        console.log('DocBot: Executing javascript: URL directly to avoid CSP block');
+        try {
+          // Extract and execute the JavaScript code
+          const jsCode = decodeURIComponent(target.href.substring(11)); // Remove 'javascript:'
+          // Execute in the page's context using eval (safe here as it's from the page itself)
+          eval(jsCode);
+        } catch (error) {
+          console.error('DocBot: Failed to execute javascript: URL:', error);
+        }
+      } else {
+        // Re-dispatch the click event normally
+        const newEvent = new MouseEvent('click', {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          button: event.button,
+          buttons: event.buttons,
+          ctrlKey: event.ctrlKey,
+          shiftKey: event.shiftKey,
+          altKey: event.altKey,
+          metaKey: event.metaKey
+        });
+        target.dispatchEvent(newEvent);
+      }
 
       // Now detect when the page has finished responding to the click
       // Pass the BEFORE snapshot to compare against
