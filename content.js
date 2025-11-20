@@ -222,29 +222,14 @@
     }, 1500);
   }
 
-  // Track if we're currently processing a javascript: URL to avoid re-interception
-  let processingJavascriptUrl = false;
-
   function handleClick(event) {
     const target = event.target;
-    const rect = target.getBoundingClientRect();
 
-    // SPECIAL CASE: javascript: URLs need special handling due to CSP restrictions
-    // For the first click, capture screenshot but don't execute yet
-    // For the second click (after screenshot), let it pass through
+    // SPECIAL CASE: Don't intercept javascript: URLs at all due to CSP restrictions
+    // The page's CSP blocks javascript: URLs when triggered programmatically,
+    // so we can't capture a screenshot and then execute them. Just log and let them through.
     if (target.tagName === 'A' && target.href && target.href.startsWith('javascript:')) {
-      if (processingJavascriptUrl) {
-        // This is the re-dispatched click, let it through naturally
-        console.log('DocBot: Allowing javascript: URL to execute naturally');
-        processingJavascriptUrl = false;
-        return; // Let the browser handle it
-      }
-
-      // First click - capture screenshot then re-trigger
-      console.log('DocBot: javascript: URL detected - capturing screenshot first');
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+      console.log('DocBot: javascript: URL detected - logging without interception due to CSP');
 
       const details = {
         tagName: target.tagName,
@@ -252,41 +237,17 @@
         className: target.className || null,
         text: getElementText(target),
         href: target.href || null,
-        type: 'javascript-url'
+        type: 'javascript-url-no-screenshot'
       };
 
-      const elementPosition = {
-        x: event.clientX,
-        y: event.clientY,
-        width: rect.width,
-        height: rect.height,
-        scrollX: window.scrollX,
-        scrollY: window.scrollY
-      };
+      // Log the action but don't wait for callback - let click proceed immediately
+      sendAction('click', details, null, null, false);
 
-      // Capture screenshot, then manually invoke the javascript: URL
-      sendAction('click', details, elementPosition, () => {
-        console.log('DocBot: Screenshot captured, now executing javascript: URL code directly');
-
-        // Extract and execute the JavaScript code directly in a way that bypasses CSP
-        // We'll use Function constructor which may work where eval doesn't
-        try {
-          const jsCode = decodeURIComponent(target.href.substring(11)); // Remove 'javascript:'
-
-          // Try to execute using Function constructor (different from eval, sometimes bypasses CSP)
-          const fn = new Function(jsCode);
-          fn.call(window);
-        } catch (error) {
-          console.error('DocBot: Failed to execute javascript: URL:', error);
-          // If that fails, try the flag approach to let the next click through
-          processingJavascriptUrl = true;
-          setTimeout(() => {
-            target.click();
-          }, 10);
-        }
-      });
+      // Don't call preventDefault() - let the browser handle the click naturally
       return;
     }
+
+    const rect = target.getBoundingClientRect();
 
     // INTERCEPT: Prevent the click from propagating until we capture screenshot
     event.preventDefault();
