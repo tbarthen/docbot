@@ -224,13 +224,18 @@
 
   function handleClick(event) {
     const target = event.target;
+    const rect = target.getBoundingClientRect();
 
-    // SPECIAL CASE: Let javascript: URLs pass through without interception
-    // These URLs are blocked by CSP when re-dispatched or executed via eval/script injection
+    // SPECIAL CASE: javascript: URLs need special handling due to CSP restrictions
+    // We'll capture the screenshot but let the click execute naturally
     if (target.tagName === 'A' && target.href && target.href.startsWith('javascript:')) {
-      console.log('DocBot: Allowing javascript: URL to execute naturally (CSP prevents interception)');
-      // Don't preventDefault - let the browser handle it normally
-      // We'll still log the action but won't capture a screenshot
+      console.log('DocBot: javascript: URL detected - capturing screenshot then allowing natural execution');
+
+      // Prevent default temporarily to capture screenshot
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
       const details = {
         tagName: target.tagName,
         id: target.id || null,
@@ -239,15 +244,41 @@
         href: target.href || null,
         type: 'javascript-url'
       };
-      sendAction('click', details, null, null, false);
-      return; // Let the click proceed naturally
+
+      const elementPosition = {
+        x: event.clientX,
+        y: event.clientY,
+        width: rect.width,
+        height: rect.height,
+        scrollX: window.scrollX,
+        scrollY: window.scrollY
+      };
+
+      // Capture screenshot, then trigger the javascript: URL
+      sendAction('click', details, elementPosition, () => {
+        console.log('DocBot: Screenshot captured, now executing javascript: URL by simulating direct click');
+
+        // Remove our listener temporarily
+        document.removeEventListener('click', handleClick, true);
+
+        // Create a new click that will be handled by the browser natively
+        // Use isTrusted workaround by clicking the element directly
+        setTimeout(() => {
+          target.click(); // Direct click bypasses our listener and CSP restrictions
+        }, 10);
+
+        // Re-attach our listener
+        setTimeout(() => {
+          document.addEventListener('click', handleClick, true);
+        }, 100);
+      });
+      return;
     }
 
     // INTERCEPT: Prevent the click from propagating until we capture screenshot
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-    const rect = target.getBoundingClientRect();
 
     const details = {
       tagName: target.tagName,
