@@ -1,7 +1,11 @@
 // DocBot Auto-Fill Module
 // Intelligent form field detection and filling with realistic test data
 
-const AutoFill = {
+// Prevent re-declaration if already loaded
+if (typeof AutoFill !== 'undefined') {
+  console.log('DocBot: AutoFill already loaded, skipping re-initialization');
+} else {
+  window.AutoFill = {
   // Test data generators
   testData: {
     realistic: {
@@ -93,7 +97,17 @@ const AutoFill = {
   },
 
   fillField(field, useRealistic = true) {
-    if (field.disabled || field.readOnly || field.type === 'password') return false;
+    if (field.disabled || field.readOnly || field.type === 'password' || field.type === 'file') return false;
+
+    // Skip fields that already have values (don't overwrite existing data)
+    if (field.value && field.value.trim() !== '') {
+      return false;
+    }
+
+    // For checkboxes and radios, skip if already checked
+    if ((field.type === 'checkbox' || field.type === 'radio') && field.checked) {
+      return false;
+    }
 
     const fieldType = this.detectFieldType(field);
     if (field.tagName === 'SELECT') {
@@ -126,9 +140,29 @@ const AutoFill = {
     const fields = [];
     const elements = document.querySelectorAll('input, select, textarea');
     elements.forEach(el => {
-      if (el.type === 'hidden' || el.type === 'submit' || el.type === 'button' || el.type === 'password') return;
+      if (el.type === 'hidden' || el.type === 'submit' || el.type === 'button' || el.type === 'password' || el.type === 'file') return;
+
+      // Check if element is actually visible
       const style = window.getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden') return;
+      if (parseFloat(style.opacity) === 0) return;
+
+      // Check dimensions
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+
+      // Check if positioned off-screen
+      if (rect.top < -1000 || rect.left < -1000) return;
+
+      // Check if any parent is hidden
+      let parent = el.parentElement;
+      while (parent && parent !== document.body) {
+        const parentStyle = window.getComputedStyle(parent);
+        if (parentStyle.display === 'none' || parentStyle.visibility === 'hidden') return;
+        if (parseFloat(parentStyle.opacity) === 0) return;
+        parent = parent.parentElement;
+      }
+
       fields.push(el);
     });
     return fields;
@@ -136,15 +170,21 @@ const AutoFill = {
 
   fillAllFields(useRealistic = true, delay = 200) {
     const fields = this.findFillableFields();
+
+    // Fill fields immediately for accurate count
     let filledCount = 0;
     fields.forEach((field, index) => {
+      // Add delay for visual stagger effect
       setTimeout(() => {
-        if (this.fillField(field, useRealistic)) {
-          filledCount++;
-          this.highlightField(field);
-        }
+        this.highlightField(field);
       }, index * delay);
+
+      // Fill immediately to get accurate count
+      if (this.fillField(field, useRealistic)) {
+        filledCount++;
+      }
     });
+
     return { total: fields.length, filled: filledCount };
   },
 
@@ -173,4 +213,5 @@ const AutoFill = {
     });
     return buttons;
   }
-};
+  };
+}

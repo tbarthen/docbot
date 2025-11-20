@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DocBot</title>
   <link rel="stylesheet" href="popup.css">
 </head>
@@ -11,9 +12,104 @@
       <h1>📝 DocBot</h1>
       <p class="subtitle">AI-Powered Documentation Generator</p>
     </div>
+
+    <div class="status" id="status">
+      <span class="status-indicator" id="statusIndicator"></span>
+      <span id="statusText">Ready to record</span>
+    </div>
+
     <div class="controls">
-      <button id="startBtn" class="btn btn-primary">Start Recording</button>
-      <button id="stopBtn" class="btn btn-secondary" disabled>Stop Recording</button>
+      <button id="startBtn" class="btn btn-primary">
+        <span class="btn-icon">●</span>
+        Start Recording
+      </button>
+      <button id="stopBtn" class="btn btn-secondary" disabled>
+        <span class="btn-icon">■</span>
+        Stop Recording
+      </button>
+    </div>
+
+    <div class="info" id="recordingInfo" style="display: none;">
+      <div class="info-item">
+        <span class="label">Screenshots:</span>
+        <span class="value" id="screenshotCount">0</span>
+      </div>
+      <div class="info-item">
+        <span class="label">Actions:</span>
+        <span class="value" id="actionCount">0</span>
+      </div>
+      <div class="info-item">
+        <span class="label">Duration:</span>
+        <span class="value" id="duration">00:00</span>
+      </div>
+    </div>
+
+    <div class="export-section" id="exportSection" style="display: none;">
+      <h3>Export Options</h3>
+      <div class="export-options">
+        <button id="analyzeBtn" class="btn btn-analyze">
+          <span class="btn-icon">🤖</span>
+          Analyze with AI
+        </button>
+        <button id="exportPdfBtn" class="btn btn-export">
+          <span class="btn-icon">📄</span>
+          Export to PDF
+        </button>
+        <button id="exportJsonBtn" class="btn btn-export">
+          <span class="btn-icon">💾</span>
+          Export Raw Data
+        </button>
+      </div>
+    </div>
+
+    <div class="settings">
+      <details>
+        <summary>⚙️ Settings</summary>
+        <div class="settings-content">
+          <label>
+            <input type="checkbox" id="captureClicks" checked>
+            Capture Clicks
+          </label>
+          <label>
+            <input type="checkbox" id="captureInputs" checked>
+            Capture Form Inputs
+          </label>
+          <label>
+            <input type="checkbox" id="captureNavigation" checked>
+            Capture Navigation
+          </label>
+          <label>
+            <input type="checkbox" id="autoScreenshot" checked>
+            Auto Screenshot on Actions
+          </label>
+          <hr style="margin: 12px 0; border: none; border-top: 1px solid #e9ecef;">
+          <h4 style="margin: 12px 0 8px 0; font-size: 13px; color: #495057;">Screenshot Quality</h4>
+          <div style="margin-bottom: 12px;">
+            <label for="screenshotQuality" style="display: block; margin-bottom: 4px;">PDF Export Quality:</label>
+            <select id="screenshotQuality" style="width: 100%; padding: 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;">
+              <option value="high">High Quality (best for AI analysis, ~7-8 MB)</option>
+              <option value="medium" selected>Medium Quality (balanced, ~3-4 MB)</option>
+              <option value="low">Low Quality (smallest, ~2 MB)</option>
+            </select>
+            <small style="color: #666; font-size: 11px;">Lower quality = smaller file size for easier sharing</small>
+          </div>
+          <hr style="margin: 12px 0; border: none; border-top: 1px solid #e9ecef;">
+          <h4 style="margin: 12px 0 8px 0; font-size: 13px; color: #495057;">Auto-Fill Settings</h4>
+          <label>
+            <input type="checkbox" id="enableAutoFill">
+            Enable Auto-Fill Forms
+          </label>
+          <label style="margin-left: 20px;">
+            <input type="checkbox" id="useRealisticData" checked>
+            Use Realistic Test Data
+          </label>
+          <div class="api-key-section">
+            <label for="apiKey">Claude API Key (optional):</label>
+            <input type="password" id="apiKey" placeholder="sk-ant-...">
+            <small>Required for AI analysis. Stored locally only.</small>
+          </div>
+        </div>
+      </details>
     </div>
   </div>
   <script src="popup.js"></script>
