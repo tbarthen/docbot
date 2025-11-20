@@ -316,8 +316,8 @@
       // Special handling for Bootstrap collapse elements - check classes instead of height
       const isBootstrapCollapse = el.classList.contains('collapse');
       const isCollapsed = isBootstrapCollapse && (
-        !el.classList.contains('in') &&  // Bootstrap 3 uses 'in' class for expanded state
-        (el.getAttribute('aria-expanded') === 'false' || !el.getAttribute('aria-expanded'))
+        !el.classList.contains('in') &&   // Bootstrap 3 uses 'in' class for expanded state
+        !el.classList.contains('show')    // Bootstrap 4/5 use 'show' class for expanded state
       );
 
       // Skip if it's a collapsed Bootstrap element
@@ -396,10 +396,18 @@
     observer = new MutationObserver((mutations) => {
       // Log what mutations we're seeing
       const meaningfulMutations = mutations.filter(m => {
-        // Check for Bootstrap accordion state changes
+        // Check for Bootstrap accordion state changes (via aria-expanded)
         if (m.type === 'attributes' && m.attributeName === 'aria-expanded') {
           console.log('DocBot: Detected accordion state change (aria-expanded):', m.target);
           return true;
+        }
+        // Check for Bootstrap collapse class changes (show/in class added/removed)
+        if (m.type === 'attributes' && m.attributeName === 'class') {
+          const element = m.target;
+          if (element.classList.contains('collapse')) {
+            console.log('DocBot: Detected Bootstrap collapse class change:', element.className);
+            return true;
+          }
         }
         // Check for visibility changes
         if (m.type === 'attributes' && (m.attributeName === 'style' || m.attributeName === 'class' || m.attributeName === 'hidden')) {
@@ -503,8 +511,16 @@
     observer = new MutationObserver((mutations) => {
       const meaningfulMutations = mutations.filter(m => {
         if (m.type === 'attributes' && m.attributeName === 'aria-expanded') {
-          console.log('DocBot: Hash nav - detected accordion state change');
+          console.log('DocBot: Hash nav - detected accordion state change (aria-expanded)');
           return true;
+        }
+        // Check for Bootstrap collapse class changes
+        if (m.type === 'attributes' && m.attributeName === 'class') {
+          const element = m.target;
+          if (element.classList.contains('collapse')) {
+            console.log('DocBot: Hash nav - detected Bootstrap collapse class change:', element.className);
+            return true;
+          }
         }
         if (m.type === 'attributes' && (m.attributeName === 'style' || m.attributeName === 'class' || m.attributeName === 'hidden')) {
           const element = m.target;
