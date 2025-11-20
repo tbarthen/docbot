@@ -268,12 +268,17 @@
 
       // Check if this is a javascript: URL (CSP blocks these when re-dispatched)
       if (target.tagName === 'A' && target.href && target.href.startsWith('javascript:')) {
-        console.log('DocBot: Executing javascript: URL directly to avoid CSP block');
+        console.log('DocBot: Executing javascript: URL by injecting into page context to avoid CSP block');
         try {
-          // Extract and execute the JavaScript code
+          // Extract the JavaScript code
           const jsCode = decodeURIComponent(target.href.substring(11)); // Remove 'javascript:'
-          // Execute in the page's context using eval (safe here as it's from the page itself)
-          eval(jsCode);
+
+          // Inject and execute in the page's main context (not content script context)
+          // This bypasses CSP restrictions on content scripts
+          const script = document.createElement('script');
+          script.textContent = jsCode;
+          document.documentElement.appendChild(script);
+          script.remove();
         } catch (error) {
           console.error('DocBot: Failed to execute javascript: URL:', error);
         }
