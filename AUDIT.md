@@ -1,5 +1,7 @@
 # DocBot hardening and design audit
 
+> **Status:** the recommendations in sections 1 to 4 and the plan in section 6 were implemented in version 2.0 (see the commit history and README.md). Section 5 was resolved by removing the AI feature.
+
 Scope: every file in the repo as of commit `625a14c` (manifest v3 Chrome extension, ~3,800 lines). Nothing was changed; this document is findings and recommendations only. Line references are to the current files.
 
 ## Summary

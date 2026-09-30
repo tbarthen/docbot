@@ -2,116 +2,61 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DocBot</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1>📝 DocBot</h1>
-      <p class="subtitle">AI-Powered Documentation Generator</p>
+  <header class="header">
+    <h1>DocBot</h1>
+    <span class="subtitle">Web workflow recorder</span>
+  </header>
+
+  <section class="card" id="statusCard">
+    <div class="status-row">
+      <span class="dot" id="dot"></span>
+      <span class="status-text" id="statusText">Loading...</span>
+    </div>
+    <div class="tab-line" id="tabLine"></div>
+
+    <div class="stats" id="stats" hidden>
+      <div class="stat"><span class="value" id="screenshotCount">0</span><span class="label">screens</span></div>
+      <div class="stat"><span class="value" id="actionCount">0</span><span class="label">actions</span></div>
+      <div class="stat"><span class="value" id="duration">00:00</span><span class="label">elapsed</span></div>
     </div>
 
-    <div class="status" id="status">
-      <span class="status-indicator" id="statusIndicator"></span>
-      <span id="statusText">Ready to record</span>
-    </div>
+    <div class="error" id="error" hidden></div>
 
-    <div class="controls">
-      <button id="startBtn" class="btn btn-primary">
-        <span class="btn-icon">●</span>
-        Start Recording
-      </button>
-      <button id="stopBtn" class="btn btn-secondary" disabled>
-        <span class="btn-icon">■</span>
-        Stop Recording
-      </button>
+    <div class="actions">
+      <button id="startBtn" class="btn btn-primary" hidden><span class="icon">&#9679;</span> Record this tab</button>
+      <button id="stopBtn" class="btn btn-danger" hidden><span class="icon">&#9632;</span> Stop &amp; open report</button>
+      <button id="gotoBtn" class="btn btn-ghost" hidden>Go to the recorded tab</button>
     </div>
+    <p class="hint" id="startHint" hidden>Click through the site. The popup closes, but recording continues; the toolbar icon shows <b>REC</b>. Reopen the popup or press <b>Alt+Shift+R</b> to stop.</p>
+  </section>
 
-    <div class="info" id="recordingInfo" style="display: none;">
-      <div class="info-item">
-        <span class="label">Screenshots:</span>
-        <span class="value" id="screenshotCount">0</span>
-      </div>
-      <div class="info-item">
-        <span class="label">Actions:</span>
-        <span class="value" id="actionCount">0</span>
-      </div>
-      <div class="info-item">
-        <span class="label">Duration:</span>
-        <span class="value" id="duration">00:00</span>
-      </div>
-    </div>
+  <section class="card" id="recentCard" hidden>
+    <h2>Recent recordings</h2>
+    <ul class="session-list" id="sessionList"></ul>
+  </section>
 
-    <div class="export-section" id="exportSection" style="display: none;">
-      <h3>Export Options</h3>
-      <div class="export-options">
-        <button id="analyzeBtn" class="btn btn-analyze">
-          <span class="btn-icon">🤖</span>
-          Analyze with AI
-        </button>
-        <button id="exportPdfBtn" class="btn btn-export">
-          <span class="btn-icon">📄</span>
-          Export to PDF
-        </button>
-        <button id="exportJsonBtn" class="btn btn-export">
-          <span class="btn-icon">💾</span>
-          Export Raw Data
-        </button>
-      </div>
+  <details class="card settings">
+    <summary>Capture settings</summary>
+    <div class="settings-body">
+      <label><input type="checkbox" id="captureClicks" checked> Record clicks</label>
+      <label><input type="checkbox" id="autoScreenshot" checked> Screenshot each click (close-up with marker)</label>
+      <label><input type="checkbox" id="captureNavigation" checked> Screenshot each new screen</label>
+      <label><input type="checkbox" id="captureInputs" checked> Log form changes</label>
+      <label class="select-label" for="screenshotQuality">Screenshot quality</label>
+      <select id="screenshotQuality">
+        <option value="high">High (largest files)</option>
+        <option value="medium" selected>Medium (recommended)</option>
+        <option value="low">Low (smallest files)</option>
+      </select>
+      <a href="#" id="optionsLink" class="link">More options: auto-fill, privacy</a>
     </div>
+  </details>
 
-    <div class="settings">
-      <details>
-        <summary>⚙️ Settings</summary>
-        <div class="settings-content">
-          <label>
-            <input type="checkbox" id="captureClicks" checked>
-            Capture Clicks
-          </label>
-          <label>
-            <input type="checkbox" id="captureInputs" checked>
-            Capture Form Inputs
-          </label>
-          <label>
-            <input type="checkbox" id="captureNavigation" checked>
-            Capture Navigation
-          </label>
-          <label>
-            <input type="checkbox" id="autoScreenshot" checked>
-            Auto Screenshot on Actions
-          </label>
-          <hr style="margin: 12px 0; border: none; border-top: 1px solid #e9ecef;">
-          <h4 style="margin: 12px 0 8px 0; font-size: 13px; color: #495057;">Screenshot Quality</h4>
-          <div style="margin-bottom: 12px;">
-            <label for="screenshotQuality" style="display: block; margin-bottom: 4px;">PDF Export Quality:</label>
-            <select id="screenshotQuality" style="width: 100%; padding: 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;">
-              <option value="high">High Quality (best for AI analysis, ~7-8 MB)</option>
-              <option value="medium" selected>Medium Quality (balanced, ~3-4 MB)</option>
-              <option value="low">Low Quality (smallest, ~2 MB)</option>
-            </select>
-            <small style="color: #666; font-size: 11px;">Lower quality = smaller file size for easier sharing</small>
-          </div>
-          <hr style="margin: 12px 0; border: none; border-top: 1px solid #e9ecef;">
-          <h4 style="margin: 12px 0 8px 0; font-size: 13px; color: #495057;">Auto-Fill Settings</h4>
-          <label>
-            <input type="checkbox" id="enableAutoFill">
-            Enable Auto-Fill Forms
-          </label>
-          <label style="margin-left: 20px;">
-            <input type="checkbox" id="useRealisticData" checked>
-            Use Realistic Test Data
-          </label>
-          <div class="api-key-section">
-            <label for="apiKey">Claude API Key (optional):</label>
-            <input type="password" id="apiKey" placeholder="sk-ant-...">
-            <small>Required for AI analysis. Stored locally only.</small>
-          </div>
-        </div>
-      </details>
-    </div>
-  </div>
+  <script src="db.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

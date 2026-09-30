@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "DocBot - AI Web App Documentation Generator",
-  "version": "1.0.0",
-  "description": "Automatically capture and document web application workflows with AI-powered analysis",
+  "name": "DocBot - Web Workflow Recorder",
+  "version": "2.0.0",
+  "description": "Record a click-through of a web app as annotated screenshots and save it as an HTML or PDF document.",
   "permissions": [
     "activeTab",
     "tabs",
     "storage",
+    "unlimitedStorage",
     "scripting",
     "webNavigation",
     "contextMenus"
@@ -19,10 +20,23 @@
   },
   "action": {
     "default_popup": "popup.html",
+    "default_title": "DocBot",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "commands": {
+    "toggle-recording": {
+      "suggested_key": {
+        "default": "Alt+Shift+R"
+      },
+      "description": "Start or stop recording"
     }
   },
   "icons": {

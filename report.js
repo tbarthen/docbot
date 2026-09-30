@@ -1,133 +1,214 @@
-// DocBot Report Generator
-// This script runs in the report.html page to populate it with recording data
+// DocBot report page: renders one recorded session and exports it.
 
-// IndexedDB helper functions
-let screenshotDB = null;
+let session = null;
+const objectUrls = [];
 
-function initScreenshotDB() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open('DocBotScreenshots', 1);
-
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => {
-      screenshotDB = request.result;
-      resolve(screenshotDB);
-    };
-
-    request.onupgradeneeded = (event) => {
-      const db = event.target.result;
-      if (!db.objectStoreNames.contains('screenshots')) {
-        db.createObjectStore('screenshots', { keyPath: 'id' });
-      }
-    };
+document.addEventListener('DOMContentLoaded', async () => {
+  document.getElementById('printBtn').addEventListener('click', () => window.print());
+  document.getElementById('saveBtn').addEventListener('click', saveAsHtml);
+  document.getElementById('sessionSelect').addEventListener('change', (e) => {
+    const url = new URL(location.href);
+    url.searchParams.set('session', e.target.value);
+    location.href = url.toString();
   });
-}
-
-async function loadScreenshotFromDB(id) {
-  if (!screenshotDB) {
-    await initScreenshotDB();
-  }
-
-  return new Promise((resolve, reject) => {
-    const transaction = screenshotDB.transaction(['screenshots'], 'readonly');
-    const store = transaction.objectStore('screenshots');
-    const request = store.get(id);
-
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-(async function() {
-  // Add print button handler
-  document.getElementById('printBtn').addEventListener('click', () => {
-    window.print();
-  });
-
-  // Initialize IndexedDB
-  await initScreenshotDB();
 
   try {
-    // Get recording data from storage
-    const data = await chrome.storage.local.get('completedRecording');
-    const recordingData = data.completedRecording;
-
-    if (!recordingData) {
-      document.getElementById('content').innerHTML = `
-        <div class="report-section">
-          <h2>No Recording Data Found</h2>
-          <p>Please complete a recording first, then export to PDF.</p>
-        </div>
-      `;
+    const sessions = await DocBotDB.listSessions();
+    const requested = new URLSearchParams(location.search).get('session');
+    session = sessions.find((s) => s.sessionId === requested) || sessions[0] || null;
+    renderSessionSelect(sessions);
+    if (!session) {
+      showEmpty('No recordings yet. Start a recording from the DocBot toolbar button, click through the site, then stop.');
       return;
     }
-
-    // Update page title with recording timestamp
-    const recordingDate = new Date(recordingData.startTime).toLocaleString();
-    document.title = `DocBot Report - ${recordingDate}`;
-
-    // Add timestamp to header
-    const subtitle = document.querySelector('.subtitle');
-    if (subtitle) {
-      subtitle.textContent = `Recording from ${recordingDate}`;
-    }
-
-    // Load screenshots from IndexedDB
-    const container = document.createElement('div');
-
-    for (let idx = 0; idx < recordingData.screenshots.length; idx++) {
-      const screenshot = recordingData.screenshots[idx];
-      const screenshotDiv = document.createElement('div');
-      screenshotDiv.className = 'screenshot-item';
-
-      const img = document.createElement('img');
-      img.alt = `Screenshot ${idx + 1}`;
-
-      try {
-        // Load screenshot from IndexedDB
-        const screenshotData = await loadScreenshotFromDB(screenshot.id);
-
-        if (screenshotData && screenshotData.dataUrl) {
-          img.src = screenshotData.dataUrl;
-        } else {
-          // Screenshot not found
-          img.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><text x="50%" y="50%" text-anchor="middle">Screenshot not found</text></svg>';
-        }
-      } catch (error) {
-        console.error('Failed to load screenshot:', error);
-        img.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><text x="50%" y="50%" text-anchor="middle">Error loading screenshot</text></svg>';
-      }
-
-      screenshotDiv.appendChild(img);
-      container.appendChild(screenshotDiv);
-    }
-
-    // Update the page content - SCREENSHOTS ONLY (no text summary)
-    const contentDiv = document.getElementById('content');
-    contentDiv.innerHTML = '';
-
-    const sectionDiv = document.createElement('div');
-    sectionDiv.className = 'report-section';
-    sectionDiv.appendChild(container);
-
-    contentDiv.appendChild(sectionDiv);
+    await renderSession(session);
   } catch (error) {
-    console.error('Error loading report:', error);
-    document.getElementById('content').innerHTML = `
-      <div class="report-section">
-        <h2>Error Loading Report</h2>
-        <p>An error occurred while loading the recording data: ${error.message}</p>
-      </div>
-    `;
+    console.error(error);
+    showEmpty(`Could not load the recording: ${error.message}`);
   }
-})();
+});
 
-function formatActionDetails(details) {
-  if (typeof details === 'string') return details;
-  if (typeof details === 'object') {
-    return Object.entries(details)
-      .map(([key, value]) => `${key}: ${value}`)
-      .join(', ');
+function showEmpty(message) {
+  const page = document.getElementById('page');
+  page.replaceChildren(Object.assign(document.createElement('div'), { className: 'empty', textContent: message }));
+  document.getElementById('saveBtn').disabled = true;
+}
+
+function renderSessionSelect(sessions) {
+  const select = document.getElementById('sessionSelect');
+  select.replaceChildren(...sessions.map((s) => {
+    const option = document.createElement('option');
+    option.value = s.sessionId;
+    option.textContent = `${new Date(s.startTime).toLocaleString()} – ${s.title || s.url}`;
+    option.selected = session && s.sessionId === session.sessionId;
+    return option;
+  }));
+  select.hidden = sessions.length < 2;
+}
+
+async function renderSession(s) {
+  document.title = `DocBot report – ${s.title || s.url}`;
+  const page = document.getElementById('page');
+  page.replaceChildren(buildHeader(s));
+
+  const shots = s.screenshots || [];
+  if (shots.length === 0) {
+    page.append(Object.assign(document.createElement('div'), { className: 'empty', textContent: 'This recording has no screenshots.' }));
+    return;
   }
-  return String(details);
+
+  for (let i = 0; i < shots.length; i++) {
+    const shot = shots[i];
+    const step = buildStep(i + 1, shot);
+    page.append(step);
+    const img = step.querySelector('img');
+    try {
+      const row = await DocBotDB.getScreenshot(shot.id);
+      if (row?.blob) {
+        const url = URL.createObjectURL(row.blob);
+        objectUrls.push(url);
+        img.src = url;
+      } else if (row?.dataUrl) {
+        img.src = row.dataUrl; // recordings made by DocBot 1.x
+      } else {
+        img.alt = 'Screenshot not found';
+        img.replaceWith(Object.assign(document.createElement('div'), { className: 'empty', textContent: 'Screenshot not found' }));
+      }
+    } catch (error) {
+      img.replaceWith(Object.assign(document.createElement('div'), { className: 'empty', textContent: `Could not load screenshot: ${error.message}` }));
+    }
+  }
+}
+
+function buildHeader(s) {
+  const header = document.createElement('div');
+  header.className = 'report-header';
+  const h1 = document.createElement('h1');
+  h1.textContent = s.title || s.url || 'Recording';
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const duration = s.endTime && s.startTime ? Math.round((s.endTime - s.startTime) / 1000) : 0;
+  const link = document.createElement('a');
+  link.href = s.url || '#';
+  link.textContent = s.url || '';
+  meta.append(
+    `${new Date(s.startTime).toLocaleString()} · ${formatDuration(duration)} · ${(s.screenshots || []).length} screens · ${(s.actions || []).length} actions`,
+    document.createElement('br'),
+    link
+  );
+  header.append(h1, meta);
+  return header;
+}
+
+function buildStep(number, shot) {
+  const step = document.createElement('div');
+  step.className = 'step' + (shot.isCropped ? ' crop' : '');
+  const caption = document.createElement('div');
+  caption.className = 'caption';
+  const num = document.createElement('span');
+  num.className = 'num';
+  num.textContent = String(number);
+  const text = document.createElement('span');
+  text.textContent = shot.caption || (shot.isCropped ? 'Click' : 'Screen');
+  const url = document.createElement('span');
+  url.className = 'url';
+  url.textContent = shot.url ? shortUrl(shot.url) : '';
+  url.title = shot.url || '';
+  caption.append(num, text, url);
+  const img = document.createElement('img');
+  img.alt = shot.caption || `Screenshot ${number}`;
+  step.append(caption, img);
+  return step;
+}
+
+function shortUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.host + u.pathname + u.search + u.hash;
+  } catch {
+    return url;
+  }
+}
+
+function formatDuration(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m ? `${m} min ${s} s` : `${s} s`;
+}
+
+// ---------------------------------------------------------------------------
+// Save as a single self-contained HTML file
+// ---------------------------------------------------------------------------
+async function saveAsHtml() {
+  if (!session) return;
+  const button = document.getElementById('saveBtn');
+  button.disabled = true;
+  button.textContent = 'Preparing...';
+  try {
+    const clone = document.getElementById('page').cloneNode(true);
+    const images = clone.querySelectorAll('img');
+    const shots = session.screenshots || [];
+    for (let i = 0; i < images.length; i++) {
+      const shot = shots[i];
+      const row = shot ? await DocBotDB.getScreenshot(shot.id) : null;
+      if (row?.blob) images[i].src = await blobToDataUrl(row.blob);
+      else if (row?.dataUrl) images[i].src = row.dataUrl;
+    }
+    const styles = document.getElementById('reportStyles').textContent;
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(document.title)}</title>
+<style>${styles}</style>
+</head>
+<body>
+${clone.outerHTML}
+</body>
+</html>`;
+    const blob = new Blob([html], { type: 'text/html' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fileName(session);
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    button.textContent = `Saved (${formatBytes(blob.size)})`;
+    setTimeout(() => { button.textContent = 'Save as HTML'; button.disabled = false; }, 2500);
+  } catch (error) {
+    console.error(error);
+    button.textContent = 'Save failed';
+    setTimeout(() => { button.textContent = 'Save as HTML'; button.disabled = false; }, 2500);
+  }
+}
+
+function fileName(s) {
+  const date = new Date(s.startTime);
+  const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}`;
+  const slug = (s.title || 'recording').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'recording';
+  return `docbot_${slug}_${stamp}.html`;
+}
+
+function pad(n) {
+  return String(n).padStart(2, '0');
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+function escapeHtml(text) {
+  return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function formatBytes(bytes) {
+  if (bytes > 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.round(bytes / 1024)} KB`;
 }
