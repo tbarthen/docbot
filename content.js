@@ -11,23 +11,26 @@
   if (!chrome.runtime?.id) return;
 
   const CLICK_ROUNDTRIP_TIMEOUT_MS = 1500; // never hold a click longer than this
-  const cleanups = [];
+  const MAX_LABEL_LENGTH = 80;             // longer click targets get no text in the log
+  const cleanups = new Set();
   let disposed = false;
 
   function on(target, type, handler, options) {
     target.addEventListener(type, handler, options);
-    cleanups.push(() => target.removeEventListener(type, handler, options));
+    cleanups.add(() => target.removeEventListener(type, handler, options));
   }
 
   function cleanup() {
     disposed = true;
-    for (const fn of cleanups.splice(0)) {
+    for (const fn of Array.from(cleanups)) {
       try { fn(); } catch (_) { /* ignore */ }
     }
+    cleanups.clear();
   }
   window.__docbotCleanup = cleanup;
 
   let paused = false;
+  let recording = false;
   let settings = {
     captureClicks: true,
     captureInputs: true,
@@ -49,23 +52,39 @@
   }, true);
 
   const onMessage = (message, sender, sendResponse) => {
-    if (message.action === 'ping') {
-      sendResponse({ ok: true });
-      return;
-    }
-    if (message.action === 'fillClickedField') {
-      if (typeof AutoFill === 'undefined') {
-        sendResponse({ success: false, error: 'AutoFill module not loaded' });
-      } else if (lastRightClickedElement && AutoFill.fillField(lastRightClickedElement)) {
-        AutoFill.highlightField(lastRightClickedElement);
-        sendResponse({ success: true });
-      } else {
-        sendResponse({ success: false, error: 'Could not fill field' });
-      }
+    switch (message.action) {
+      case 'ping':
+        sendResponse({ ok: true, recording });
+        return;
+      case 'captureAfterSettle':
+        // A same-document navigation (pushState) happened; capture the new view once it settles.
+        if (recording && !paused) {
+          waitForStabilization(snapshotVisibleContent(), { delay: 600, maxWait: 3000, force: true }, () => {
+            sendAction('navigation', {
+              url: window.location.href,
+              title: document.title,
+              type: 'view_settled'
+            }, null, null, true);
+          });
+        }
+        sendResponse({ ok: true });
+        return;
+      case 'fillClickedField':
+        if (typeof AutoFill === 'undefined') {
+          sendResponse({ success: false, error: 'AutoFill module not loaded' });
+        } else if (lastRightClickedElement && AutoFill.fillField(lastRightClickedElement)) {
+          AutoFill.highlightField(lastRightClickedElement);
+          sendResponse({ success: true });
+        } else {
+          sendResponse({ success: false, error: 'Could not fill field' });
+        }
+        return;
+      default:
+        return;
     }
   };
   chrome.runtime.onMessage.addListener(onMessage);
-  cleanups.push(() => chrome.runtime.onMessage.removeListener(onMessage));
+  cleanups.add(() => chrome.runtime.onMessage.removeListener(onMessage));
 
   // -------------------------------------------------------------------------
   // Boot
@@ -85,6 +104,7 @@
       useRealisticData: result.useRealisticData !== false
     };
     if (!result.isRecording) return; // injected only for the context menu
+    recording = true;
     paused = !!result.isPaused;
     initializeCapture();
   });
@@ -103,12 +123,14 @@
       if (changes.isPaused) paused = !!changes.isPaused.newValue;
     };
     chrome.storage.onChanged.addListener(onStorageChanged);
-    cleanups.push(() => chrome.storage.onChanged.removeListener(onStorageChanged));
+    cleanups.add(() => chrome.storage.onChanged.removeListener(onStorageChanged));
   }
 
   // -------------------------------------------------------------------------
   // Clicks: hold the click, take the "before" screenshot, then replay it.
   // -------------------------------------------------------------------------
+  let cancelPendingSettle = null; // only the most recent click's settled state matters
+
   function handleClick(event) {
     // Our own replayed click (and clicks the page generates itself) pass through.
     if (!event.isTrusted) return;
@@ -134,12 +156,18 @@
     event.stopPropagation();
     event.stopImmediatePropagation();
 
+    if (cancelPendingSettle) cancelPendingSettle();
     const beforeSnapshot = snapshotVisibleContent();
 
     sendAction('click', details, position, () => {
       // Replay the click whether or not the screenshot succeeded, and even if
       // the recording stopped in the meantime; the user's click must land.
-      target.dispatchEvent(new MouseEvent('click', {
+      // If the page re-rendered the element while we held the click, aim at
+      // whatever is at the same spot now.
+      const replayTarget = target.isConnected
+        ? target
+        : (document.elementFromPoint(event.clientX, event.clientY) || document.body);
+      replayTarget.dispatchEvent(new MouseEvent('click', {
         bubbles: true,
         cancelable: true,
         composed: true,
@@ -158,7 +186,7 @@
 
       if (disposed) return;
       // If the click changed what is on screen, capture the new state once it settles.
-      waitForStabilization(beforeSnapshot, { delay: 600, maxWait: 2000 }, () => {
+      cancelPendingSettle = waitForStabilization(beforeSnapshot, { delay: 600, maxWait: 2000 }, () => {
         sendAction('navigation', {
           url: window.location.href,
           title: document.title,
@@ -169,20 +197,40 @@
     });
   }
 
+  // Describe the clicked element by the nearest thing a person would call it:
+  // a button, link, label or field. Large containers get no text, so nothing
+  // on the page leaks into the log or the report captions by accident.
   function describeElement(el) {
+    const control = el.closest('button, a, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], label, input, select, textarea, summary, [aria-label]') || el;
     return {
       tagName: el.tagName,
       id: el.id || null,
-      className: typeof el.className === 'string' ? el.className : null,
-      text: visibleText(el),
+      className: typeof el.className === 'string' ? el.className.substring(0, 100) : null,
+      text: shortLabel(control),
       href: el.closest('a[href]')?.href || null,
       type: el.getAttribute('type') || null
     };
   }
 
-  function visibleText(el) {
-    const text = el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '';
-    return text.trim().replace(/\s+/g, ' ').substring(0, 100);
+  function shortLabel(el) {
+    const explicit = el.getAttribute('aria-label') || el.getAttribute('title');
+    if (explicit) return clip(explicit);
+    if (el.tagName === 'INPUT') {
+      if (['button', 'submit', 'reset'].includes(el.type)) return clip(el.value);
+      return clip(inputLabel(el) || '');
+    }
+    if (el.tagName === 'SELECT' || el.tagName === 'TEXTAREA') return clip(inputLabel(el) || '');
+    if (el.tagName === 'IMG') return clip(el.alt || '');
+    // textContent is cheap; skip innerText (forces layout) on anything large.
+    const raw = el.textContent || '';
+    if (raw.length > MAX_LABEL_LENGTH * 4) return '';
+    const text = (el.innerText || raw).trim().replace(/\s+/g, ' ');
+    return text.length <= MAX_LABEL_LENGTH ? text : '';
+  }
+
+  function clip(text) {
+    const t = (text || '').trim().replace(/\s+/g, ' ');
+    return t.length <= MAX_LABEL_LENGTH ? t : t.substring(0, MAX_LABEL_LENGTH - 3) + '...';
   }
 
   // -------------------------------------------------------------------------
@@ -253,26 +301,11 @@
     }
   }
 
+  // pushState/replaceState cannot be observed from here (content scripts run in
+  // an isolated world with their own History object); the background worker
+  // watches webNavigation.onHistoryStateUpdated and asks for a capture instead.
   function captureHistoryNavigation() {
-    const originalPushState = history.pushState;
-    const originalReplaceState = history.replaceState;
     const logHistory = (type) => sendAction('navigation', { url: window.location.href, title: document.title, type });
-
-    history.pushState = function (...args) {
-      const result = originalPushState.apply(this, args);
-      logHistory('pushState');
-      return result;
-    };
-    history.replaceState = function (...args) {
-      const result = originalReplaceState.apply(this, args);
-      logHistory('replaceState');
-      return result;
-    };
-    cleanups.push(() => {
-      history.pushState = originalPushState;
-      history.replaceState = originalReplaceState;
-    });
-
     on(window, 'popstate', () => logHistory('popstate'));
 
     // Hash routers (Handlebars/Require.js style SPAs): wait for the new view,
@@ -318,15 +351,25 @@
   }
 
   // Calls `callback` once the DOM has been quiet for `delay` ms (or `maxWait`
-  // has passed) and only if the visible content differs from `before`.
-  function waitForStabilization(before, { delay, maxWait, minWait = 0 }, callback) {
+  // has passed) and, unless `force`, only if the visible content differs from
+  // `before`. Returns a function that cancels the wait.
+  function waitForStabilization(before, { delay, maxWait, minWait = 0, force = false }, callback) {
     const startedAt = Date.now();
     let debounce = null;
+    let maxTimer = null;
     let finished = false;
 
     const observer = new MutationObserver((mutations) => {
       if (mutations.some(isMeaningfulMutation)) armDebounce();
     });
+
+    const stop = () => {
+      finished = true;
+      observer.disconnect();
+      clearTimeout(debounce);
+      clearTimeout(maxTimer);
+      cleanups.delete(stop);
+    };
 
     const finish = () => {
       if (finished) return;
@@ -335,12 +378,9 @@
         setTimeout(finish, minWait - elapsed);
         return;
       }
-      finished = true;
-      observer.disconnect();
-      clearTimeout(debounce);
-      clearTimeout(maxTimer);
+      stop();
       if (disposed) return;
-      if (snapshotVisibleContent() !== before) callback();
+      if (force || snapshotVisibleContent() !== before) callback();
     };
 
     const armDebounce = () => {
@@ -348,13 +388,14 @@
       debounce = setTimeout(finish, delay);
     };
 
-    const maxTimer = setTimeout(finish, maxWait);
+    maxTimer = setTimeout(finish, maxWait);
     observer.observe(document.body, {
       childList: true, subtree: true, attributes: true,
       attributeFilter: ['style', 'class', 'hidden', 'aria-expanded']
     });
-    cleanups.push(() => { observer.disconnect(); clearTimeout(debounce); clearTimeout(maxTimer); });
+    cleanups.add(stop);
     armDebounce();
+    return stop;
   }
 
   // -------------------------------------------------------------------------
@@ -381,7 +422,7 @@
       if (added) schedule();
     });
     if (document.body) observer.observe(document.body, { childList: true, subtree: true });
-    cleanups.push(() => { observer.disconnect(); clearTimeout(autoFillTimer); });
+    cleanups.add(() => { observer.disconnect(); clearTimeout(autoFillTimer); });
   }
 
   function autoFillPage() {
@@ -416,7 +457,7 @@
     try {
       chrome.runtime.sendMessage({
         action: 'captureAction',
-        data: { type, details, elementPosition, captureScreenshot }
+        data: { type, details, elementPosition, captureScreenshot, sentAt: Date.now() }
       }, () => {
         void chrome.runtime.lastError; // extension reloaded or worker gone; nothing to do
         finish();

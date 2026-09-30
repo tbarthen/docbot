@@ -61,8 +61,10 @@ function attachListeners() {
 
   chrome.runtime.onMessage.addListener((message) => {
     if (message.action === 'recordingUpdate' && message.summary) {
+      const skippedBefore = currentSummary?.skippedScreenshots || 0;
       currentSummary = message.summary;
       renderStats();
+      if ((message.summary.skippedScreenshots || 0) !== skippedBefore) refresh();
     }
   });
   chrome.storage.onChanged.addListener((changes) => {
@@ -136,9 +138,10 @@ async function refresh() {
     show(ui.stopBtn, true);
     show(ui.gotoBtn, !onRecordedTab);
     show(ui.startHint, false);
-    if (!onRecordedTab) {
-      showError('Recording is running in another tab. Only that tab is captured.');
-    }
+    const notes = [];
+    if (!onRecordedTab) notes.push('Recording is running in another tab. Only that tab is captured.');
+    if (state.summary?.skippedScreenshots > 0) notes.push(`${state.summary.skippedScreenshots} screenshot(s) skipped: the tab was not visible, or clicks came faster than screenshots can be taken.`);
+    if (notes.length) showError(notes.join(' '));
   } else {
     currentSummary = null;
     stopDurationTimer();

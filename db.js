@@ -8,10 +8,12 @@ const DocBotDB = (() => {
   const DB_NAME = 'DocBotScreenshots';
   const DB_VERSION = 2;
   let db = null;
+  let opening = null; // shared by concurrent callers so only one connection is made
 
   function open() {
     if (db) return Promise.resolve(db);
-    return new Promise((resolve, reject) => {
+    if (opening) return opening;
+    opening = new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = (event) => {
         const d = event.target.result;
@@ -30,12 +32,14 @@ const DocBotDB = (() => {
       };
       req.onsuccess = () => {
         db = req.result;
+        opening = null;
         db.onclose = () => { db = null; };
         db.onversionchange = () => { db.close(); db = null; };
         resolve(db);
       };
-      req.onerror = () => reject(req.error);
+      req.onerror = () => { opening = null; reject(req.error); };
     });
+    return opening;
   }
 
   // Run one request inside a transaction and resolve with its result.

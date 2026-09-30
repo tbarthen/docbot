@@ -1,5 +1,7 @@
 # DocBot 2.0 hardening audit
 
+> **Status:** all findings except L5 and L6 (documented in README.md) were fixed in version 2.1; `test/e2e.mjs` covers them.
+
 Scope: every file as of commit `a0b44e2` (the version with pause and the marker toggle). Read in full and reviewed adversarially; two findings were verified with a live Chromium experiment rather than asserted. Nothing was changed. The first audit is in `AUDIT.md`.
 
 ## Summary

@@ -97,6 +97,18 @@ function buildHeader(s) {
     link
   );
   header.append(h1, meta);
+  if (s.skippedScreenshots > 0) {
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = `${s.skippedScreenshots} screenshot${s.skippedScreenshots === 1 ? ' was' : 's were'} skipped: the recorded tab was not visible, or clicks came faster than screenshots can be taken.`;
+    header.append(note);
+  }
+  if (s.stopReason === 'tab_missing') {
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = 'This recording ended because the browser was restarted while it was running.';
+    header.append(note);
+  }
   return header;
 }
 
@@ -117,6 +129,7 @@ function buildStep(number, shot) {
   caption.append(num, text, url);
   const img = document.createElement('img');
   img.alt = shot.caption || `Screenshot ${number}`;
+  img.dataset.shotId = shot.id;
   step.append(caption, img);
   return step;
 }
@@ -146,13 +159,13 @@ async function saveAsHtml() {
   button.textContent = 'Preparing...';
   try {
     const clone = document.getElementById('page').cloneNode(true);
-    const images = clone.querySelectorAll('img');
-    const shots = session.screenshots || [];
-    for (let i = 0; i < images.length; i++) {
-      const shot = shots[i];
-      const row = shot ? await DocBotDB.getScreenshot(shot.id) : null;
-      if (row?.blob) images[i].src = await blobToDataUrl(row.blob);
-      else if (row?.dataUrl) images[i].src = row.dataUrl;
+    // Match each image to its screenshot by id, never by position: a missing
+    // screenshot is rendered as a placeholder and would shift the indices.
+    for (const img of clone.querySelectorAll('img[data-shot-id]')) {
+      const row = await DocBotDB.getScreenshot(img.dataset.shotId);
+      if (row?.blob) img.src = await blobToDataUrl(row.blob);
+      else if (row?.dataUrl) img.src = row.dataUrl;
+      else img.remove();
     }
     const styles = document.getElementById('reportStyles').textContent;
     const html = `<!DOCTYPE html>

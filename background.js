@@ -12,6 +12,7 @@ const CROP_CLICK_OFFSET = 0.75;  // the click sits 75% from the left edge of the
 const CAPTURE_SPACING_MS = 550;  // Chrome allows two captureVisibleTab calls per second
 const FULL_DEDUPE_WINDOW_MS = 2500; // a full capture of the same URL inside this window replaces the previous one
 const SESSIONS_TO_KEEP = 3;
+const STALE_CROP_MS = 1500;      // matches the content script's click hold; a crop older than this is skipped
 
 // ---------------------------------------------------------------------------
 // State. Everything here is also mirrored to chrome.storage.local so a
@@ -20,8 +21,8 @@ const SESSIONS_TO_KEEP = 3;
 let isRecording = false;
 let isPaused = false; // recording continues, screenshots are skipped
 let recordingTabId = null;
-let recordingWindowId = null;
 let recordingData = null;
+let starting = false; // guards against two Start calls racing
 
 let lastCaptureTime = 0;
 let captureChain = Promise.resolve(); // serializes captureVisibleTab calls
@@ -33,15 +34,21 @@ const ready = restoreState();
 async function restoreState() {
   try {
     const state = await chrome.storage.local.get([
-      'isRecording', 'isPaused', 'recordingTabId', 'recordingWindowId', 'recordingData'
+      'isRecording', 'isPaused', 'recordingTabId', 'recordingData'
     ]);
     if (state.isRecording && state.recordingData) {
       isRecording = true;
       isPaused = !!state.isPaused;
       recordingTabId = state.recordingTabId;
-      recordingWindowId = state.recordingWindowId;
       recordingData = state.recordingData;
       setBadge();
+      // After a browser restart the recorded tab is gone (tab IDs are not
+      // preserved). Keep what was captured, but don't stay "recording" forever.
+      const tabExists = await chrome.tabs.get(recordingTabId).then(() => true, () => false);
+      if (!tabExists) {
+        console.warn('DocBot: recorded tab no longer exists; finalizing the recording');
+        await stopRecording({ reason: 'tab_missing', openReport: false });
+      }
     }
     await migrateLegacyRecording();
   } catch (error) {
@@ -151,7 +158,8 @@ chrome.commands.onCommand.addListener(async (command) => {
 async function isInjected(tabId) {
   try {
     const response = await chrome.tabs.sendMessage(tabId, { action: 'ping' });
-    return !!(response && response.ok);
+    // An instance injected only for the context menu must be replaced while recording.
+    return !!(response && response.ok && (!isRecording || response.recording));
   } catch {
     return false;
   }
@@ -193,6 +201,40 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   }
 });
 
+// Chrome swaps in a new tab ID when a prerendered page is activated; follow it.
+chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
+  await ready;
+  if (!isRecording || removedTabId !== recordingTabId) return;
+  recordingTabId = addedTabId;
+  await chrome.storage.local.set({ recordingTabId });
+  await ensureInjected(addedTabId).catch(() => {});
+});
+
+// Same-document navigations (pushState) are invisible to the content script,
+// so watch them here. A path change means a new view: log it and ask the page
+// for a capture once it settles. Query-only or hash-only changes are logged.
+let lastHistoryUrl = null;
+chrome.webNavigation.onHistoryStateUpdated.addListener(async (details) => {
+  await ready;
+  if (!isRecording || details.tabId !== recordingTabId || details.frameId !== 0) return;
+  const previous = lastHistoryUrl || recordingData?.url || '';
+  lastHistoryUrl = details.url;
+  let pathChanged = false;
+  try {
+    pathChanged = new URL(details.url).pathname !== new URL(previous).pathname;
+  } catch (_) { /* ignore */ }
+  const tab = await chrome.tabs.get(details.tabId).catch(() => null);
+  if (!tab) return;
+  await captureAction({
+    type: 'navigation',
+    details: { url: details.url, title: tab.title, type: 'history', transitionType: details.transitionType },
+    captureScreenshot: false
+  }, tab);
+  if (pathChanged && !isPaused) {
+    chrome.tabs.sendMessage(details.tabId, { action: 'captureAfterSettle' }).catch(() => {});
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Messages from the popup and content scripts
 // ---------------------------------------------------------------------------
@@ -212,7 +254,6 @@ async function handleMessage(message, sender) {
         isRecording,
         isPaused,
         recordingTabId,
-        recordingWindowId,
         summary: recordingData ? summarize(recordingData) : null
       };
 
@@ -227,8 +268,11 @@ async function handleMessage(message, sender) {
 
     case 'focusRecordingTab':
       if (recordingTabId !== null) {
-        await chrome.tabs.update(recordingTabId, { active: true }).catch(() => {});
-        if (recordingWindowId !== null) await chrome.windows.update(recordingWindowId, { focused: true }).catch(() => {});
+        const tab = await chrome.tabs.get(recordingTabId).catch(() => null);
+        if (tab) {
+          await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+          await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+        }
       }
       return { success: true };
 
@@ -252,10 +296,18 @@ async function handleMessage(message, sender) {
 // Start / stop
 // ---------------------------------------------------------------------------
 async function startRecording(settings) {
-  if (isRecording) {
+  if (isRecording || starting) {
     return { success: false, error: 'Already recording. Stop the current recording first.' };
   }
+  starting = true;
+  try {
+    return await beginRecording(settings);
+  } finally {
+    starting = false;
+  }
+}
 
+async function beginRecording(settings) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return { success: false, error: 'No active tab found.' };
   if (!isRecordableUrl(tab.url)) {
@@ -276,22 +328,22 @@ async function startRecording(settings) {
       autoScreenshot: settings.autoScreenshot !== false
     },
     actions: [],
-    screenshots: []
+    screenshots: [],
+    skippedScreenshots: 0
   };
 
   isRecording = true;
   isPaused = false;
   recordingTabId = tab.id;
-  recordingWindowId = tab.windowId;
   recordingData = data;
   lastCaptureTime = 0;
+  lastHistoryUrl = tab.url;
 
   // Persist before injecting so the content script sees isRecording = true.
   await chrome.storage.local.set({
     isRecording: true,
     isPaused: false,
     recordingTabId,
-    recordingWindowId,
     recordingData: data,
     ...data.settings
   });
@@ -312,15 +364,14 @@ async function resetState() {
   isRecording = false;
   isPaused = false;
   recordingTabId = null;
-  recordingWindowId = null;
   recordingData = null;
   setBadge();
   await chrome.storage.local.set({
-    isRecording: false, isPaused: false, recordingTabId: null, recordingWindowId: null, recordingData: null
+    isRecording: false, isPaused: false, recordingTabId: null, recordingData: null
   });
 }
 
-async function stopRecording({ reason = 'user' } = {}) {
+async function stopRecording({ reason = 'user', openReport: shouldOpenReport = true } = {}) {
   if (!isRecording || !recordingData) {
     return { success: false, error: 'Nothing is being recorded.' };
   }
@@ -339,7 +390,7 @@ async function stopRecording({ reason = 'user' } = {}) {
   await chrome.storage.local.set({ lastSessionId: data.sessionId });
   await resetState();
 
-  await openReport(data.sessionId);
+  if (shouldOpenReport) await openReport(data.sessionId);
   return { success: true, session: summarize(data) };
 }
 
@@ -357,7 +408,8 @@ function summarize(data) {
     startTime: data.startTime,
     endTime: data.endTime,
     actionCount: data.actions.length,
-    screenshotCount: data.screenshots.length
+    screenshotCount: data.screenshots.length,
+    skippedScreenshots: data.skippedScreenshots || 0
   };
 }
 
@@ -372,7 +424,8 @@ async function captureAction(actionData, tab) {
     details: actionData.details || {},
     url: tab.url,
     title: tab.title,
-    elementPosition: actionData.elementPosition || null
+    elementPosition: actionData.elementPosition || null,
+    sentAt: actionData.sentAt || Date.now()
   };
   data.actions.push(action);
 
@@ -405,6 +458,7 @@ function captureScreenshot(data, tabId, action, crop) {
     .catch((error) => {
       console.warn('DocBot: screenshot skipped:', error.message);
       action.screenshotError = error.message;
+      data.skippedScreenshots = (data.skippedScreenshots || 0) + 1;
       return null;
     });
   captureChain = job;
@@ -412,6 +466,12 @@ function captureScreenshot(data, tabId, action, crop) {
 }
 
 async function doCapture(data, tabId, action, crop) {
+  // A click close-up must show the screen as it was when the click happened.
+  // If the queue held it past the content script's click hold, the page has
+  // moved on and the picture would be misleading; skip it instead.
+  if (crop && Date.now() - action.sentAt > STALE_CROP_MS) {
+    throw new Error('stale: clicks came faster than screenshots can be taken');
+  }
   const tab = await chrome.tabs.get(tabId);
   if (!tab.active) throw new Error('recorded tab is not visible');
 
@@ -519,11 +579,13 @@ function describeAction(action) {
       return d.id ? `Clicked ${tag} #${d.id}` : `Clicked ${tag}`;
     }
     case 'navigation': {
-      const title = action.title || d.title || d.url || '';
+      const title = d.title || action.title || d.url || '';
       switch (d.type) {
         case 'page_load': return `Page: ${title}`;
         case 'post_click_state': return `Screen after click: ${title}`;
-        case 'hashchange': return `View changed: ${title}`;
+        case 'hashchange':
+        case 'history':
+        case 'view_settled': return `View changed: ${title}`;
         default: return `Screen: ${title}`;
       }
     }
