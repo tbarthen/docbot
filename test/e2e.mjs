@@ -110,6 +110,17 @@ const renderedAt = await page.evaluate(() => window.__renderedAt);
 check(lateApp.caption === 'Page: Late rendering app' && lateApp.taken > renderedAt && lateApp.darkShare > 0.02, `first screenshot waited for the app to render (taken ${lateApp.taken - renderedAt} ms after render, ${(lateApp.darkShare * 100).toFixed(1)}% content)`);
 
 // ---------------------------------------------------------------------------
+console.log('\n2d. Close-up shows the whole dialog around the click');
+await page.goto(`${SITE}/dialog`); await sleep(2000);
+const dlgBox = await page.locator('#dlg').boundingBox();
+await page.click('#dlgA'); await sleep(1500);
+const dlgShot = await sw.evaluate(() => { const s = recordingData.screenshots.filter((x) => x.isCropped).pop(); return { caption: s.caption, cropBox: s.cropBox, marker: s.marker }; });
+const cb = dlgShot.cropBox;
+check(cb && cb.x <= dlgBox.x && cb.x + cb.width >= dlgBox.x + dlgBox.width && cb.y <= dlgBox.y && cb.y + cb.height >= dlgBox.y + dlgBox.height,
+  `close-up contains the whole dialog (crop ${cb?.width}x${cb?.height} at ${cb?.x?.toFixed(0)},${cb?.y?.toFixed(0)}; dialog ${dlgBox.width.toFixed(0)}x${dlgBox.height.toFixed(0)} at ${dlgBox.x.toFixed(0)},${dlgBox.y.toFixed(0)})`);
+check(!!dlgShot.marker, 'marker drawn on the dialog close-up');
+
+// ---------------------------------------------------------------------------
 console.log('\n3. Held click still lands when the element re-renders (H3)');
 await page.goto(`${SITE}/rerender`); await sleep(1500);
 await page.click('#rb'); await sleep(600);
@@ -313,6 +324,29 @@ check(info.loaded === info.steps, 'all report images load');
 check(info.note.includes('skipped'), 'report header explains skipped screenshots (L3)');
 console.log(`     ${info.steps} images, ${(info.total / 1024).toFixed(0)} KB total`);
 await report.screenshot({ path: path.join(OUT, 'report.png'), fullPage: true });
+
+// Layout options: screenshots only, then add step numbers back.
+await report.evaluate(() => { document.getElementById('layoutMenu').open = true; });
+await report.click('#optPlain'); await sleep(200);
+const plainVisible = await report.evaluate(() => ({
+  num: getComputedStyle(document.querySelector('.step .num')).display,
+  text: getComputedStyle(document.querySelector('.step .caption .text')).display,
+  header: getComputedStyle(document.querySelector('.report-header')).display,
+  divider: getComputedStyle(document.querySelector('.divider')).display
+}));
+check(Object.values(plainVisible).every((d) => d === 'none'), `"Screenshots only" hides numbers, descriptions, header and dividers (${JSON.stringify(plainVisible)})`);
+await report.click('#optNumbers'); await sleep(200);
+check((await report.evaluate(() => getComputedStyle(document.querySelector('.step .num')).display)) !== 'none', 'step numbers can be added back on their own');
+const [plainDownload] = await Promise.all([report.waitForEvent('download'), report.click('#saveBtn')]);
+const plainPath = path.join(OUT, 'plain-' + plainDownload.suggestedFilename());
+await plainDownload.saveAs(plainPath);
+const plainHtml = fs.readFileSync(plainPath, 'utf8');
+check(!plainHtml.includes('class="report-header"') && !plainHtml.includes('class="text"') && plainHtml.includes('class="num"'), 'saved file leaves out hidden items and keeps the ones added back');
+check((await sw.evaluate(async () => (await chrome.storage.local.get('reportLayout')).reportLayout))?.plain === true, 'layout choice is remembered');
+await report.evaluate(() => { document.getElementById('layoutMenu').open = true; });
+await report.click('#optPlain'); await sleep(200); // back to the full layout for the remaining checks
+await report.evaluate(() => { document.getElementById('layoutMenu').open = false; });
+await sleep(3000); // let the Save button reset
 
 // H1: remove one screenshot row, reload, and make sure the saved file still pairs images correctly.
 const victim = stop.session.screenshotCount > 3 ? 2 : 0;

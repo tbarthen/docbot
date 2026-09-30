@@ -8,7 +8,8 @@ const QUALITY = { high: 85, medium: 70, low: 50 }; // JPEG quality per setting
 const MAX_FULL_WIDTH = 1600;     // CSS px; full-screen captures are downscaled to at most this width
 const CROP_WIDTH = 1200;         // CSS px; click captures show this much around the click
 const CROP_HEIGHT = 400;
-const CROP_CLICK_OFFSET = 0.75;  // the click sits 75% from the left edge of the crop
+const CROP_MAX_HEIGHT = 640;     // a close-up grows to this to fit the clicked element's dialog or panel
+const CROP_PADDING = 16;         // CSS px around a container that the close-up is fitted to
 const CAPTURE_SPACING_MS = 550;  // Chrome allows two captureVisibleTab calls per second
 const FULL_DEDUPE_WINDOW_MS = 2500; // a full capture of the same URL inside this window replaces the previous one
 const PAGE_LOAD_REPLACE_MS = 15000; // a later page-load capture of the same page replaces the earlier one within this window
@@ -734,7 +735,7 @@ async function doCapture(data, tabId, action, crop) {
   const rawDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality });
 
   // The bitmap is in device pixels; tab.width is CSS pixels.
-  const { blob, marker } = await processCapture(rawDataUrl, {
+  const { blob, marker, markerSkipped, cropBox } = await processCapture(rawDataUrl, {
     cssWidth: tab.width,
     clickPosition: crop ? action.elementPosition : null,
     drawMarker: clickMarkers !== false,
@@ -772,7 +773,9 @@ async function doCapture(data, tabId, action, crop) {
     tabId: action.tabId,
     actionType: action.type,
     kind: action.details?.type || null,
-    marker: marker || null, // where the click marker was drawn, in image pixels
+    marker: marker || null,
+    markerSkipped: markerSkipped || null,
+    cropBox: cropBox || null, // where the click marker was drawn, in image pixels
     caption: describeAction(action)
   };
   data.screenshots.push(shot);
@@ -790,12 +793,26 @@ async function processCapture(dataUrl, { cssWidth, clickPosition, drawMarker = t
     let marker = null;
 
     if (clickPosition) {
-      sw = Math.min(bitmap.width, Math.round(CROP_WIDTH * dpr));
-      sh = Math.min(bitmap.height, Math.round(CROP_HEIGHT * dpr));
       const cx = clickPosition.x * dpr;
       const cy = clickPosition.y * dpr;
-      sx = clamp(Math.round(cx - sw * CROP_CLICK_OFFSET), 0, bitmap.width - sw);
-      sy = clamp(Math.round(cy - sh / 2), 0, bitmap.height - sh);
+      const pad = CROP_PADDING * dpr;
+      const box = clickPosition.container
+        ? { x: clickPosition.container.x * dpr - pad, y: clickPosition.container.y * dpr - pad,
+            w: clickPosition.container.width * dpr + 2 * pad, h: clickPosition.container.height * dpr + 2 * pad }
+        : null;
+      sw = Math.min(bitmap.width, Math.round(CROP_WIDTH * dpr));
+      // Tall enough for the container when that stays within the maximum.
+      sh = Math.min(bitmap.height, Math.round(Math.max(CROP_HEIGHT * dpr, Math.min(CROP_MAX_HEIGHT * dpr, box ? box.h : 0))));
+      // Start centred on the click, then slide to take in the whole container
+      // where it fits; the click stays inside either way.
+      sx = cx - sw / 2;
+      sy = cy - sh / 2;
+      if (box) {
+        if (box.w <= sw) sx = clamp(sx, box.x + box.w - sw, box.x);
+        if (box.h <= sh) sy = clamp(sy, box.y + box.h - sh, box.y);
+      }
+      sx = clamp(Math.round(sx), 0, bitmap.width - sw);
+      sy = clamp(Math.round(sy), 0, bitmap.height - sh);
       dw = Math.round(sw / dpr);
       dh = Math.round(sh / dpr);
       marker = { x: (cx - sx) / dpr, y: (cy - sy) / dpr };
@@ -827,7 +844,12 @@ async function processCapture(dataUrl, { cssWidth, clickPosition, drawMarker = t
     }
 
     const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: quality / 100 });
-    return { blob, marker: marker && drawMarker ? { x: Math.round(marker.x), y: Math.round(marker.y) } : null };
+    return {
+      blob,
+      marker: marker && drawMarker ? { x: Math.round(marker.x), y: Math.round(marker.y) } : null,
+      markerSkipped: marker && !drawMarker ? 'setting off' : null,
+      cropBox: clickPosition ? { x: sx / dpr, y: sy / dpr, width: dw, height: dh } : null
+    };
   } finally {
     bitmap.close();
   }

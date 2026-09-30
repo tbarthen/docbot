@@ -236,7 +236,8 @@
     const position = {
       x: event.clientX,
       y: event.clientY,
-      dpr: window.devicePixelRatio || 1
+      dpr: window.devicePixelRatio || 1,
+      container: containerRect(target) // dialog, form or panel the click belongs to, if it is small enough to show whole
     };
 
     // While paused, and for javascript: links (which cannot be replayed under
@@ -300,6 +301,10 @@
       if (offset) {
         position.x += offset.x;
         position.y += offset.y;
+        if (position.container) {
+          position.container.x += offset.x;
+          position.container.y += offset.y;
+        }
         position.translated = true;
         position.frameOffset = offset;
         sendAction('click', details, position, replay);
@@ -323,6 +328,23 @@
       href: el.closest('a[href]')?.href || null,
       type: el.getAttribute('type') || null
     };
+  }
+
+  // The outermost dialog, form, table or panel around the element that would
+  // fit in a close-up. Lets the close-up show the whole dialog instead of
+  // cutting it at an arbitrary edge.
+  const CONTAINER_SELECTOR = 'dialog, [role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], .modal-dialog, .modal-content, .modal, .popover, .dropdown-menu, .card, .panel, fieldset, form, table, section, article, aside, nav';
+  const CONTAINER_MAX_WIDTH = 1200;
+  const CONTAINER_MAX_HEIGHT = 640;
+  function containerRect(el) {
+    let best = null;
+    for (let node = el.closest(CONTAINER_SELECTOR); node; node = node.parentElement?.closest(CONTAINER_SELECTOR)) {
+      const r = node.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      if (r.width > CONTAINER_MAX_WIDTH || r.height > CONTAINER_MAX_HEIGHT) break;
+      best = { x: r.left, y: r.top, width: r.width, height: r.height };
+    }
+    return best;
   }
 
   function shortLabel(el) {

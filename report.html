@@ -20,6 +20,23 @@
     .btn.primary { background: #667eea; color: #fff; }
     .btn.primary:hover { background: #5568d3; }
     .btn:disabled { opacity: 0.6; cursor: default; }
+    .menu { position: relative; }
+    .menu summary { list-style: none; display: inline-block; }
+    .menu summary::-webkit-details-marker { display: none; }
+    .menu-body { position: absolute; right: 0; top: calc(100% + 6px); background: #fff; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.12); padding: 12px 14px; min-width: 220px; z-index: 30; }
+    .menu-body label { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 14px; cursor: pointer; white-space: nowrap; }
+    .menu-body .master { font-weight: 600; }
+    .menu-body .sub { margin: 6px 0 0 6px; padding-left: 12px; border-left: 2px solid #eef0fb; }
+    .menu-body .sub.disabled { opacity: 0.45; pointer-events: none; }
+    .menu-body .sub-title { font-size: 12px; color: #6c757d; margin: 4px 0 2px; }
+    /* Layout options: hide the embellishments the reader has turned off. */
+    .page.no-numbers .num { display: none; }
+    .page.no-captions .caption .text { display: none; }
+    .page.no-urls .caption .url { display: none; }
+    .page.no-numbers.no-captions.no-urls .caption { display: none; }
+    .page.no-dividers .divider { display: none; }
+    .page.no-header .report-header { display: none; }
+    .page.plain .step { padding: 10px; margin-bottom: 12px; }
     .report-header { background: #fff; border-radius: 8px; padding: 22px 26px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
     .report-header h1 { margin: 0 0 6px; font-size: 22px; }
     .report-header .meta { color: #6c757d; font-size: 14px; }
@@ -50,6 +67,20 @@
     <strong>DocBot report</strong>
     <div class="grow"></div>
     <select id="sessionSelect" title="Switch recording"></select>
+    <details class="menu" id="layoutMenu">
+      <summary class="btn">Layout</summary>
+      <div class="menu-body">
+        <label class="master"><input type="checkbox" id="optPlain"> Screenshots only</label>
+        <div class="sub" id="plainSub">
+          <div class="sub-title">Add back:</div>
+          <label><input type="checkbox" id="optNumbers"> Step numbers</label>
+          <label><input type="checkbox" id="optCaptions"> Descriptions</label>
+          <label><input type="checkbox" id="optUrls"> Page addresses</label>
+          <label><input type="checkbox" id="optDividers"> Tab changes</label>
+          <label><input type="checkbox" id="optHeader"> Report header</label>
+        </div>
+      </div>
+    </details>
     <button class="btn" id="printBtn">Print / Save as PDF</button>
     <button class="btn primary" id="saveBtn">Save as HTML</button>
   </div>

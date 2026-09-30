@@ -8,7 +8,7 @@ A Chrome extension that records a click-through of a web application as annotate
 2. Click through the site. Each click is captured as a close-up with a red marker, and each new screen is captured in full once it has settled (apps that render after the page loads are waited for). Empty margins around a narrow page are trimmed so the content fills the picture. In the report, click any screenshot to see it at full size. The popup closes; the toolbar icon shows **REC** while recording.
 3. To move through pages you don't want in the document, click **Pause screenshots** in the popup or press **Alt+Shift+P**; the toolbar badge shows **II**. Press it again to resume.
 4. Reopen the popup (from any tab) and click **Stop & open report**, or press **Alt+Shift+R**.
-5. The report opens in a new tab. **Save as HTML** downloads one self-contained file with the images embedded. **Print / Save as PDF** uses Chrome's print dialog.
+5. The report opens in a new tab. **Save as HTML** downloads one self-contained file with the images embedded. **Print / Save as PDF** uses Chrome's print dialog. The **Layout** menu has a **Screenshots only** switch that strips step numbers, descriptions, page addresses, tab dividers and the header; each of those can be added back individually. The choice is remembered and applies to the saved file too. (The red click marker is part of the image, so it is a capture setting in the popup, not a layout option.)
 
 Closing the recorded tab also ends the recording and opens the report. If the browser is restarted while recording, what was captured is kept and listed in the popup. The last three recordings are kept and can be reopened from the popup; older ones are deleted when a new recording ends.
 

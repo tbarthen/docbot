@@ -3,7 +3,56 @@
 let session = null;
 const objectUrls = [];
 
+// Which embellishments to show around the screenshots. "plain" hides all of
+// them; the individual flags then add items back. Remembered across reports.
+const LAYOUT_ITEMS = ['numbers', 'captions', 'urls', 'dividers', 'header'];
+let layout = { plain: false, numbers: false, captions: false, urls: false, dividers: false, header: false };
+
+async function loadLayout() {
+  try {
+    const { reportLayout } = await chrome.storage.local.get('reportLayout');
+    if (reportLayout && typeof reportLayout === 'object') layout = { ...layout, ...reportLayout };
+  } catch (_) { /* defaults */ }
+}
+
+function applyLayout() {
+  const page = document.getElementById('page');
+  page.classList.toggle('plain', layout.plain);
+  for (const item of LAYOUT_ITEMS) {
+    page.classList.toggle(`no-${item}`, layout.plain && !layout[item]);
+  }
+  document.getElementById('optPlain').checked = layout.plain;
+  document.getElementById('plainSub').classList.toggle('disabled', !layout.plain);
+  for (const item of LAYOUT_ITEMS) {
+    document.getElementById(`opt${item[0].toUpperCase()}${item.slice(1)}`).checked = layout[item];
+  }
+}
+
+function wireLayoutMenu() {
+  const save = () => chrome.storage.local.set({ reportLayout: layout }).catch(() => {});
+  document.getElementById('optPlain').addEventListener('change', (e) => {
+    layout.plain = e.target.checked;
+    applyLayout();
+    save();
+  });
+  for (const item of LAYOUT_ITEMS) {
+    document.getElementById(`opt${item[0].toUpperCase()}${item.slice(1)}`).addEventListener('change', (e) => {
+      layout[item] = e.target.checked;
+      applyLayout();
+      save();
+    });
+  }
+  // Close the menu when clicking elsewhere.
+  document.addEventListener('click', (e) => {
+    const menu = document.getElementById('layoutMenu');
+    if (menu.open && !menu.contains(e.target)) menu.open = false;
+  });
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
+  await loadLayout();
+  wireLayoutMenu();
+  applyLayout();
   document.getElementById('printBtn').addEventListener('click', () => window.print());
   document.getElementById('saveBtn').addEventListener('click', saveAsHtml);
   document.getElementById('sessionSelect').addEventListener('change', (e) => {
@@ -150,7 +199,11 @@ function buildStep(number, shot) {
   num.className = 'num';
   num.textContent = String(number);
   const text = document.createElement('span');
+  text.className = 'text';
   text.textContent = shot.caption || (shot.isCropped ? 'Click' : 'Screen');
+  if (shot.isCropped && !shot.marker) {
+    text.textContent += shot.markerSkipped ? ' (marker off)' : ' (marker missing)';
+  }
   const url = document.createElement('span');
   url.className = 'url';
   url.textContent = shot.url ? shortUrl(shot.url) : '';
@@ -206,6 +259,17 @@ async function saveAsHtml() {
   button.textContent = 'Preparing...';
   try {
     const clone = document.getElementById('page').cloneNode(true);
+    // Leave out whatever the layout options hide, so the file is clean.
+    if (layout.plain) {
+      const gone = [];
+      if (!layout.numbers) gone.push('.num');
+      if (!layout.captions) gone.push('.caption .text');
+      if (!layout.urls) gone.push('.caption .url');
+      if (!layout.dividers) gone.push('.divider');
+      if (!layout.header) gone.push('.report-header');
+      if (!layout.numbers && !layout.captions && !layout.urls) gone.push('.caption');
+      for (const el of clone.querySelectorAll(gone.join(', '))) el.remove();
+    }
     // Match each image to its screenshot by id, never by position: a missing
     // screenshot is rendered as a placeholder and would shift the indices.
     for (const img of clone.querySelectorAll('img[data-shot-id]')) {

@@ -77,6 +77,14 @@ const routes = {
       window.__renderedAt = Date.now();
     }, 1800);</script></body></html>`,
 
+  // A centred dialog over the page; the close-up should show the whole dialog.
+  '/dialog': shell('Dialog page', `<p>Page behind the dialog. ${'Text. '.repeat(60)}</p>
+    <div id="overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6)"></div>
+    <div id="dlg" role="dialog" style="position:fixed;left:50%;top:50%;width:520px;transform:translate(-50%,-50%);background:#fff;border-radius:10px;padding:28px;text-align:center">
+      <h2 style="margin:0 0 10px">Auto-Login</h2><p>Logging in as <b>Admin</b> in 6 seconds...</p>
+      <button id="dlgA" style="background:#1a73e8">Login as Admin Now</button> <button id="dlgB">Login as Approver</button>
+      <p><button id="dlgC" style="background:#666">Cancel</button></p></div>`),
+
   '/rerender': shell('Re-render test', `<div id="wrap"><button id="rb">Re-render me</button></div><p id="count">Clicks: 0</p>`,
     `window.__clicks = 0;
      // The button replaces itself shortly after it receives focus (which happens on
