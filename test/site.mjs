@@ -23,7 +23,8 @@ const routes = {
     <button id="toggle" onclick="document.getElementById('p').classList.toggle('open')">Show details</button>
     <div class="panel" id="p"><h3>Details panel</h3><p>${'Detail text. '.repeat(30)}</p></div>
     <div class="bigtext" id="bigtext">Customer record: Jane Q. Example, account 4485-1122-9087. ${'Filler text that should never appear in a caption. '.repeat(8)}</div>
-    <p><a class="btn" id="spa" href="/spa">Single-page section</a> <a class="btn" id="rerender" href="/rerender">Re-render test</a></p>`),
+    <p><a class="btn" id="spa" href="/spa">Single-page section</a> <a class="btn" id="rerender" href="/rerender">Re-render test</a>
+       <a class="btn" id="newtab" href="/done" target="_blank" rel="opener">Open in new tab</a></p>`),
 
   '/form': shell('Enrollment form', `<form method="get" action="/done">
     <div class="row"><label for="fn">First name</label><input id="fn" name="fn"></div>

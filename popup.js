@@ -7,8 +7,8 @@ let currentSummary = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
   for (const id of [
-    'dot', 'statusText', 'tabLine', 'stats', 'screenshotCount', 'actionCount', 'duration', 'error',
-    'startBtn', 'stopBtn', 'pauseBtn', 'gotoBtn', 'startHint', 'recentCard', 'sessionList',
+    'dot', 'statusText', 'tabLine', 'stats', 'screenshotCount', 'actionCount', 'tabCount', 'duration', 'error',
+    'startBtn', 'includeBtn', 'stopBtn', 'pauseBtn', 'gotoBtn', 'startHint', 'recentCard', 'sessionList',
     'captureClicks', 'autoScreenshot', 'clickMarkers', 'captureNavigation', 'captureInputs', 'screenshotQuality', 'optionsLink'
   ]) ui[id] = el(id);
 
@@ -51,6 +51,7 @@ async function saveSettings() {
 function attachListeners() {
   ui.startBtn.addEventListener('click', startRecording);
   ui.stopBtn.addEventListener('click', stopRecording);
+  ui.includeBtn.addEventListener('click', includeTab);
   ui.pauseBtn.addEventListener('click', togglePause);
   ui.gotoBtn.addEventListener('click', () => send({ action: 'focusRecordingTab' }));
   ui.optionsLink.addEventListener('click', (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
@@ -92,6 +93,15 @@ async function startRecording() {
   await refresh();
 }
 
+async function includeTab() {
+  showError(null);
+  ui.includeBtn.disabled = true;
+  const response = await send({ action: 'includeTab' });
+  ui.includeBtn.disabled = false;
+  if (!response || !response.success) showError(response?.error || 'Could not include this tab.');
+  await refresh();
+}
+
 async function togglePause() {
   const state = await send({ action: 'getState' });
   const response = await send({ action: 'setPaused', paused: !state?.isPaused });
@@ -126,7 +136,8 @@ async function refresh() {
 
   if (state.isRecording) {
     currentSummary = state.summary;
-    const onRecordedTab = activeTab && activeTab.id === state.recordingTabId;
+    const onRecordedTab = !!activeTab && (state.recordedTabIds || []).includes(activeTab.id);
+    const includable = !onRecordedTab && !!activeTab && /^https?:\/\//i.test(activeTab.url || '');
     setStatus(state.isPaused ? 'paused' : 'recording', state.isPaused ? 'Recording (screenshots paused)' : 'Recording');
     ui.tabLine.textContent = state.summary?.title || '';
     ui.pauseBtn.textContent = state.isPaused ? 'Resume screenshots' : 'Pause screenshots';
@@ -135,11 +146,12 @@ async function refresh() {
     renderStats();
     startDurationTimer();
     show(ui.startBtn, false);
+    show(ui.includeBtn, includable);
     show(ui.stopBtn, true);
     show(ui.gotoBtn, !onRecordedTab);
     show(ui.startHint, false);
     const notes = [];
-    if (!onRecordedTab) notes.push('Recording is running in another tab. Only that tab is captured.');
+    if (!onRecordedTab) notes.push(includable ? 'This tab is not part of the recording yet.' : 'This tab cannot be recorded; the recording continues in its own tabs.');
     if (state.summary?.skippedScreenshots > 0) notes.push(`${state.summary.skippedScreenshots} screenshot(s) skipped: the tab was not visible, or clicks came faster than screenshots can be taken.`);
     if (notes.length) showError(notes.join(' '));
   } else {
@@ -149,6 +161,7 @@ async function refresh() {
     ui.tabLine.textContent = activeTab?.title ? `Tab: ${activeTab.title}` : '';
     ui.stats.hidden = true;
     show(ui.startBtn, true);
+    show(ui.includeBtn, false);
     show(ui.stopBtn, false);
     show(ui.pauseBtn, false);
     show(ui.gotoBtn, false);
@@ -179,6 +192,7 @@ function renderStats() {
   if (!currentSummary) return;
   ui.screenshotCount.textContent = currentSummary.screenshotCount ?? 0;
   ui.actionCount.textContent = currentSummary.actionCount ?? 0;
+  ui.tabCount.textContent = currentSummary.tabCount ?? 1;
   renderDuration();
 }
 

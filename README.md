@@ -14,7 +14,9 @@ Closing the recorded tab also ends the recording and opens the report. If the br
 
 The shortcuts can be changed at `chrome://extensions/shortcuts` (useful on Windows with more than one keyboard layout, where Alt+Shift also switches languages).
 
-Only the recorded tab is captured. Embedded frames (iframes) on that tab are recorded too, including cross-origin and nested ones: clicks inside a frame get a close-up with the marker in the right place, and a large frame loading a new page counts as a new screen. If a frame's position on screen cannot be worked out (for example when its parent page cannot be scripted), the click is recorded with a full-screen capture instead of a close-up, never with a misplaced marker.
+A recording follows more than one tab when the workflow does. A link that opens a new tab from a recorded tab is included automatically. If you switch to some other web tab, a DocBot banner at the top of that page offers **Include this tab**; the popup has the same button. Once included, a tab stays part of the recording, and the report shows a divider wherever the tab changed. Closing one of several recorded tabs drops it from the recording; closing the last one ends the recording.
+
+Embedded frames (iframes) on that tab are recorded too, including cross-origin and nested ones: clicks inside a frame get a close-up with the marker in the right place, and a large frame loading a new page counts as a new screen. If a frame's position on screen cannot be worked out (for example when its parent page cannot be scripted), the click is recorded with a full-screen capture instead of a close-up, never with a misplaced marker.
 
 ## Install
 

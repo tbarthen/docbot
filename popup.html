@@ -21,6 +21,7 @@
     <div class="stats" id="stats" hidden>
       <div class="stat"><span class="value" id="screenshotCount">0</span><span class="label">screens</span></div>
       <div class="stat"><span class="value" id="actionCount">0</span><span class="label">actions</span></div>
+      <div class="stat"><span class="value" id="tabCount">1</span><span class="label">tabs</span></div>
       <div class="stat"><span class="value" id="duration">00:00</span><span class="label">elapsed</span></div>
     </div>
 
@@ -28,11 +29,12 @@
 
     <div class="actions">
       <button id="startBtn" class="btn btn-primary" hidden><span class="icon">&#9679;</span> Record this tab</button>
+      <button id="includeBtn" class="btn btn-primary" hidden>Include this tab in the recording</button>
       <button id="stopBtn" class="btn btn-danger" hidden><span class="icon">&#9632;</span> Stop &amp; open report</button>
       <button id="pauseBtn" class="btn btn-ghost" hidden>Pause screenshots</button>
       <button id="gotoBtn" class="btn btn-ghost" hidden>Go to the recorded tab</button>
     </div>
-    <p class="hint" id="startHint" hidden>Click through the site. The popup closes, but recording continues; the toolbar icon shows <b>REC</b>. Reopen the popup or press <b>Alt+Shift+R</b> to stop. <b>Alt+Shift+P</b> pauses screenshots while you move between pages.</p>
+    <p class="hint" id="startHint" hidden>Click through the site. The popup closes, but recording continues; the toolbar icon shows <b>REC</b>. Reopen the popup or press <b>Alt+Shift+R</b> to stop. <b>Alt+Shift+P</b> pauses screenshots while you move between pages. Links that open a new tab are recorded too; other tabs you switch to offer an "Include this tab" banner.</p>
   </section>
 
   <section class="card" id="recentCard" hidden>

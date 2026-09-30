@@ -117,10 +117,10 @@ console.log(`     ${s.shots.length - before} screenshots for 6 rapid clicks`);
 console.log('\n4b. Embedded frames');
 await page.goto(`${SITE}/frames`); await sleep(2500);
 const frames = await sw.evaluate(async () => {
-  const all = await chrome.webNavigation.getAllFrames({ tabId: recordingTabId });
+  const all = await chrome.webNavigation.getAllFrames({ tabId: recordedTabs[0] });
   const out = [];
   for (const f of all) {
-    const ping = await chrome.tabs.sendMessage(recordingTabId, { action: 'ping' }, { frameId: f.frameId }).catch(() => null);
+    const ping = await chrome.tabs.sendMessage(recordedTabs[0], { action: 'ping' }, { frameId: f.frameId }).catch(() => null);
     out.push({ frameId: f.frameId, parent: f.parentFrameId, url: f.url, injected: !!(ping && ping.recording) });
   }
   return out;
@@ -174,9 +174,9 @@ check(Math.abs(frameClick.x - (innerBox.x + innerBox.width / 2)) < 3 && Math.abs
 // A frame added after the page loaded gets the content script too.
 await page.click('#addframe'); await sleep(2500);
 const dyn = await sw.evaluate(async () => {
-  const all = await chrome.webNavigation.getAllFrames({ tabId: recordingTabId });
+  const all = await chrome.webNavigation.getAllFrames({ tabId: recordedTabs[0] });
   const f = all.filter((x) => x.url.endsWith('/form')).pop();
-  const ping = f ? await chrome.tabs.sendMessage(recordingTabId, { action: 'ping' }, { frameId: f.frameId }).catch(() => null) : null;
+  const ping = f ? await chrome.tabs.sendMessage(recordedTabs[0], { action: 'ping' }, { frameId: f.frameId }).catch(() => null) : null;
   return !!(ping && ping.recording);
 });
 check(dyn, 'frame added by the page after load is recorded too');
@@ -187,6 +187,65 @@ check(s.shots.filter((x) => x.crop).pop()?.caption === 'Clicked "First name" (em
 check(!s.actions.some((a) => a.sub === 'frame_click_fullscreen'), 'no frame click had to fall back to a full-screen capture');
 console.log(`     ${s.shots.length - beforeFrames} screenshots for the frames page`);
 await page.goto(`${SITE}/`); await sleep(1500);
+
+// ---------------------------------------------------------------------------
+console.log('\n4c. More than one tab');
+const tabsBeforeMulti = (await sw.evaluate(() => recordedTabs.length));
+const [opened] = await Promise.all([ctx.waitForEvent('page'), page.click('#newtab')]);
+await opened.waitForLoadState('load'); await sleep(2000);
+let st = await sw.evaluate(() => ({ tabs: recordedTabs.length, acts: recordingData.actions.map((a) => ({ type: a.type, sub: a.details.type, reason: a.details.reason, title: a.details.title })), shots: recordingData.screenshots.map((x) => x.caption) }));
+check(st.tabs === tabsBeforeMulti + 1, `a tab opened from a recorded tab is included automatically (${st.tabs} tabs)`);
+check(st.acts.some((a) => a.sub === 'tab_included' && a.reason === 'opened'), 'the inclusion is logged');
+check(st.shots.includes('Page: Enrollment complete'), 'the new tab\'s page was captured');
+await opened.click('text=Back to home'); await opened.waitForURL(`${SITE}/`); await sleep(1200);
+check((await swState()).shots.filter((x) => x.crop).pop()?.caption === 'Clicked "Back to home"', 'clicks in the new tab are recorded');
+
+// A tab the user opens and switches to by hand gets the banner.
+const manual = await ctx.newPage();
+await manual.goto(`${SITE}/form`); await manual.bringToFront(); await sleep(800);
+const bannerHost = manual.locator('#docbot-offer-host');
+check(await bannerHost.count() === 1, 'switching to an unrelated web tab shows the include banner');
+check((await sw.evaluate(() => chrome.action.getBadgeText({ tabId: [...bannerTabs][0] }))) === '+', 'that tab\'s badge shows +');
+// The banner lives in a closed shadow root; click by position.
+const bannerBox = await bannerHost.boundingBox();
+await manual.mouse.click(bannerBox.x + bannerBox.width - 230, bannerBox.y + bannerBox.height / 2); // "Include this tab"
+await sleep(1500);
+st = await sw.evaluate(() => ({ tabs: recordedTabs.length, banner: bannerTabs.size }));
+check(st.tabs === tabsBeforeMulti + 2, `Include adds the tab (${st.tabs} tabs)`);
+check(await bannerHost.count() === 0, 'banner goes away after Include');
+await manual.click('#fn'); await sleep(1200);
+check((await swState()).shots.filter((x) => x.crop).pop()?.caption === 'Clicked "First name"', 'clicks in the included tab are recorded');
+
+// Back to the original tab: no banner, a "switched to" entry, and a capture.
+await page.bringToFront(); await sleep(2000);
+st = await sw.evaluate(() => ({ acts: recordingData.actions.filter((a) => a.type === 'tab').map((a) => a.details.type), shots: recordingData.screenshots.map((x) => x.caption) }));
+check(await page.locator('#docbot-offer-host').count() === 0, 'the original tab never shows the banner');
+check(st.acts.includes('tab_switch'), 'switching back is logged');
+check(st.shots.includes('Tab: Home page'), 'the screen after switching is captured');
+
+// "Not this tab" is remembered.
+const declined = await ctx.newPage();
+await declined.goto(`${SITE}/spa`); await declined.bringToFront(); await sleep(800);
+const declinedHost = declined.locator('#docbot-offer-host');
+const dBox = await declinedHost.boundingBox();
+await declined.mouse.click(dBox.x + dBox.width - 70, dBox.y + dBox.height / 2); // "Not this tab"
+await sleep(500);
+await page.bringToFront(); await sleep(300);
+await declined.bringToFront(); await sleep(800);
+check(await declinedHost.count() === 0, 'a declined tab is not offered again');
+const step2Clicks = async () => (await swState()).actions.filter((a) => a.type === 'click' && a.text === 'Go to step 2').length;
+const step2Before = await step2Clicks();
+await declined.click('#step2'); await sleep(800);
+check((await step2Clicks()) === step2Before, 'clicks in a declined tab are not recorded');
+await declined.close();
+
+// Closing one of several recorded tabs keeps the recording going.
+await opened.close(); await sleep(800);
+st = await sw.evaluate(() => ({ recording: isRecording, tabs: recordedTabs.length, closed: recordingData.actions.some((a) => a.details.type === 'tab_closed') }));
+check(st.recording && st.tabs === tabsBeforeMulti + 1 && st.closed, 'closing one recorded tab drops it and keeps recording');
+await manual.close(); await sleep(800);
+check(await sw.evaluate(() => isRecording && recordedTabs.length === 1), 'back to one recorded tab');
+await page.bringToFront(); await sleep(500);
 
 // ---------------------------------------------------------------------------
 console.log('\n5. Pause and markers');
@@ -225,6 +284,7 @@ const info = await report.evaluate(async () => {
   return { steps: imgs.length, loaded: imgs.filter((i) => i.naturalWidth > 0).length, total: sizes.reduce((a, b) => a + b, 0), note: document.querySelector('.report-header .note')?.textContent || '' };
 });
 check(info.steps === stop.session.screenshotCount, `report shows every screenshot (${info.steps})`);
+check((await report.locator('.divider').count()) >= 3, `report shows tab dividers (${await report.locator('.divider').count()})`);
 check(info.loaded === info.steps, 'all report images load');
 check(info.note.includes('skipped'), 'report header explains skipped screenshots (L3)');
 console.log(`     ${info.steps} images, ${(info.total / 1024).toFixed(0)} KB total`);
@@ -272,7 +332,7 @@ await p3.close();
 console.log('\n9. Browser restart with a dead tab finalizes the recording (H4)');
 const tabsBefore2 = reportTabs().length;
 await sw.evaluate(async () => {
-  await chrome.storage.local.set({ isRecording: true, recordingTabId: 987654321, recordingData: { sessionId: 'docbot_restart_test', startTime: Date.now() - 5000, url: 'http://example.test/', title: 'Ghost tab', settings: {}, actions: [], screenshots: [] } });
+  await chrome.storage.local.set({ isRecording: true, recordedTabs: [987654321], recordingData: { sessionId: 'docbot_restart_test', startTime: Date.now() - 5000, url: 'http://example.test/', title: 'Ghost tab', settings: {}, actions: [], screenshots: [] } });
   await restoreState();
 });
 const after = await sw.evaluate(async () => ({ isRecording, session: await DocBotDB.getSession('docbot_restart_test') }));

@@ -21,9 +21,12 @@ const MIN_FRAME_AREA = 0.2;      // a frame smaller than this share of the tab i
 // ---------------------------------------------------------------------------
 let isRecording = false;
 let isPaused = false; // recording continues, screenshots are skipped
-let recordingTabId = null;
+let recordedTabs = []; // tab ids that are part of the recording, in the order they were added
+let lastActiveRecordedTab = null;
 let recordingData = null;
 let starting = false; // guards against two Start calls racing
+const dismissedOffers = new Set(); // tabs where the user said "not this tab"
+const bannerTabs = new Set();      // tabs currently showing the include banner
 
 let lastCaptureTime = 0;
 let captureChain = Promise.resolve(); // serializes captureVisibleTab calls
@@ -35,20 +38,26 @@ const ready = restoreState();
 async function restoreState() {
   try {
     const state = await chrome.storage.local.get([
-      'isRecording', 'isPaused', 'recordingTabId', 'recordingData'
+      'isRecording', 'isPaused', 'recordedTabs', 'lastActiveRecordedTab', 'recordingData'
     ]);
     if (state.isRecording && state.recordingData) {
       isRecording = true;
       isPaused = !!state.isPaused;
-      recordingTabId = state.recordingTabId;
       recordingData = state.recordingData;
-      setBadge();
-      // After a browser restart the recorded tab is gone (tab IDs are not
+      lastActiveRecordedTab = state.lastActiveRecordedTab ?? null;
+      // After a browser restart the recorded tabs are gone (tab IDs are not
       // preserved). Keep what was captured, but don't stay "recording" forever.
-      const tabExists = await chrome.tabs.get(recordingTabId).then(() => true, () => false);
-      if (!tabExists) {
-        console.warn('DocBot: recorded tab no longer exists; finalizing the recording');
+      const existing = [];
+      for (const id of state.recordedTabs || []) {
+        if (await chrome.tabs.get(id).then(() => true, () => false)) existing.push(id);
+      }
+      recordedTabs = existing;
+      setBadge();
+      if (recordedTabs.length === 0) {
+        console.warn('DocBot: recorded tabs no longer exist; finalizing the recording');
         await stopRecording({ reason: 'tab_missing', openReport: false });
+      } else {
+        await chrome.storage.local.set({ recordedTabs });
       }
     }
     await migrateLegacyRecording();
@@ -106,6 +115,14 @@ function setBadge() {
   }
   chrome.action.setBadgeText({ text: isPaused ? 'II' : 'REC' });
   chrome.action.setBadgeBackgroundColor({ color: isPaused ? '#fd7e14' : '#dc3545' });
+}
+
+function isRecordedTab(tabId) {
+  return isRecording && recordedTabs.includes(tabId);
+}
+
+async function persistTabs() {
+  await chrome.storage.local.set({ recordedTabs, lastActiveRecordedTab });
 }
 
 async function setPaused(paused) {
@@ -229,7 +246,17 @@ function isRecordableUrl(url) {
 // so re-inject. Same-document navigations answer the ping and are skipped.
 chrome.webNavigation.onCommitted.addListener(async (details) => {
   await ready;
-  if (!isRecording || details.tabId !== recordingTabId) return;
+  if (!isRecording) return;
+  if (!isRecordedTab(details.tabId)) {
+    // A tab the user opened blank and then navigated (Ctrl+T, type an
+    // address) becomes offerable once it shows a web page.
+    if (details.frameId === 0 && isRecordableUrl(details.url)) {
+      bannerTabs.delete(details.tabId); // the old document's banner is gone with it
+      const tab = await chrome.tabs.get(details.tabId).catch(() => null);
+      if (tab?.active) await offerTab(details.tabId);
+    }
+    return;
+  }
   try {
     if (details.frameId === 0) {
       if (isRecordableUrl(details.url)) await ensureInjected(details.tabId);
@@ -246,22 +273,109 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
   }
 });
 
-// Closing the recorded tab ends the recording instead of leaving it dangling.
+// Closing a recorded tab drops it from the recording; closing the last one
+// ends the recording instead of leaving it dangling.
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   await ready;
-  if (isRecording && tabId === recordingTabId) {
+  bannerTabs.delete(tabId);
+  dismissedOffers.delete(tabId);
+  if (!isRecordedTab(tabId)) return;
+  recordedTabs = recordedTabs.filter((id) => id !== tabId);
+  if (recordedTabs.length === 0) {
     await stopRecording({ reason: 'tab_closed' });
+    return;
   }
+  if (lastActiveRecordedTab === tabId) lastActiveRecordedTab = recordedTabs[recordedTabs.length - 1];
+  await persistTabs();
+  const entry = recordingData.tabs?.find((t) => t.tabId === tabId);
+  await logAction({ type: 'tab', details: { type: 'tab_closed', title: entry?.title || '', url: entry?.url || '' } }, tabId);
 });
 
 // Chrome swaps in a new tab ID when a prerendered page is activated; follow it.
 chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
   await ready;
-  if (!isRecording || removedTabId !== recordingTabId) return;
-  recordingTabId = addedTabId;
-  await chrome.storage.local.set({ recordingTabId });
+  if (!isRecordedTab(removedTabId)) return;
+  recordedTabs = recordedTabs.map((id) => (id === removedTabId ? addedTabId : id));
+  if (lastActiveRecordedTab === removedTabId) lastActiveRecordedTab = addedTabId;
+  const entry = recordingData.tabs?.find((t) => t.tabId === removedTabId);
+  if (entry) entry.tabId = addedTabId;
+  await persistTabs();
   await ensureInjected(addedTabId).catch(() => {});
 });
+
+// A tab opened from a recorded tab (a link with target=_blank, window.open)
+// is the workflow continuing: include it without asking. The content script
+// is injected once the new tab commits a document.
+chrome.tabs.onCreated.addListener(async (tab) => {
+  await ready;
+  if (!isRecording || tab.openerTabId === undefined || !isRecordedTab(tab.openerTabId)) return;
+  await includeTab(tab.id, 'opened');
+});
+
+// Switching tabs: a recorded tab gets a "switched to" entry and a capture of
+// what is on screen; any other web tab is offered for inclusion.
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  await ready;
+  if (!isRecording) return;
+  if (isRecordedTab(tabId)) {
+    if (tabId !== lastActiveRecordedTab) {
+      lastActiveRecordedTab = tabId;
+      await persistTabs();
+      const tab = await chrome.tabs.get(tabId).catch(() => null);
+      if (tab) {
+        await logAction({ type: 'tab', details: { type: 'tab_switch', title: tab.title, url: tab.url } }, tabId);
+        if (!isPaused) chrome.tabs.sendMessage(tabId, { action: 'captureAfterSettle', type: 'tab_switch' }, { frameId: 0 }).catch(() => {});
+      }
+    }
+    return;
+  }
+  await offerTab(tabId);
+});
+
+// Show the include banner in a web tab that is not part of the recording.
+async function offerTab(tabId) {
+  if (dismissedOffers.has(tabId) || bannerTabs.has(tabId)) return;
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab || !isRecordableUrl(tab.url)) return;
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['offer.js'] });
+    bannerTabs.add(tabId);
+    chrome.action.setBadgeText({ tabId, text: '+' });
+    chrome.action.setBadgeBackgroundColor({ tabId, color: '#667eea' });
+  } catch (error) {
+    console.warn('DocBot: could not offer tab', tab.url, error.message);
+  }
+}
+
+async function closeBanner(tabId) {
+  bannerTabs.delete(tabId);
+  chrome.tabs.sendMessage(tabId, { action: 'offerClose' }).catch(() => {});
+  chrome.action.setBadgeText({ tabId, text: '' }).catch?.(() => {});
+}
+
+// Add a tab to the recording. `reason` is 'start', 'opened' or 'manual'.
+async function includeTab(tabId, reason) {
+  if (!isRecording || recordedTabs.includes(tabId)) return { success: false, error: 'Tab is already part of the recording.' };
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab) return { success: false, error: 'That tab no longer exists.' };
+  if (reason === 'manual' && !isRecordableUrl(tab.url)) {
+    return { success: false, error: 'DocBot can only record regular web pages (http or https).' };
+  }
+  recordedTabs.push(tabId);
+  dismissedOffers.delete(tabId);
+  if (tab.active) lastActiveRecordedTab = tabId;
+  recordingData.tabs = recordingData.tabs || [];
+  recordingData.tabs.push({ tabId, title: tab.title || tab.url || '', url: tab.url || '', includedAt: Date.now(), reason });
+  await persistTabs();
+  await closeBanner(tabId);
+  await logAction({ type: 'tab', details: { type: 'tab_included', title: tab.title || '', url: tab.url || '', reason } }, tabId);
+  if (isRecordableUrl(tab.url)) {
+    // The content script's own page_load capture records the tab's screen.
+    await injectContentScripts(tabId).catch((error) => console.warn('DocBot: could not attach to included tab', error.message));
+  }
+  chrome.runtime.sendMessage({ action: 'recordingUpdate', summary: summarize(recordingData) }).catch(() => {});
+  return { success: true, tab: { id: tab.id, title: tab.title, url: tab.url } };
+}
 
 // Same-document navigations (pushState) are invisible to the content script,
 // so watch them here. A path change means a new view: log it and ask the page
@@ -269,7 +383,7 @@ chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
 let lastHistoryUrl = null;
 chrome.webNavigation.onHistoryStateUpdated.addListener(async (details) => {
   await ready;
-  if (!isRecording || details.tabId !== recordingTabId || details.frameId !== 0) return;
+  if (!isRecordedTab(details.tabId) || details.frameId !== 0) return;
   const previous = lastHistoryUrl || recordingData?.url || '';
   lastHistoryUrl = details.url;
   let pathChanged = false;
@@ -306,7 +420,7 @@ async function handleMessage(message, sender) {
         success: true,
         isRecording,
         isPaused,
-        recordingTabId,
+        recordedTabIds: recordedTabs.slice(),
         summary: recordingData ? summarize(recordingData) : null
       };
 
@@ -319,29 +433,52 @@ async function handleMessage(message, sender) {
     case 'setPaused':
       return setPaused(message.paused);
 
-    case 'focusRecordingTab':
-      if (recordingTabId !== null) {
-        const tab = await chrome.tabs.get(recordingTabId).catch(() => null);
+    case 'focusRecordingTab': {
+      const target = lastActiveRecordedTab ?? recordedTabs[0];
+      if (target !== undefined && target !== null) {
+        const tab = await chrome.tabs.get(target).catch(() => null);
         if (tab) {
           await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
           await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
         }
       }
       return { success: true };
+    }
+
+    case 'includeTab': {
+      // From the banner (sender.tab) or the popup (the active tab).
+      let tabId = sender.tab?.id;
+      if (tabId === undefined) {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        tabId = active?.id;
+      }
+      if (tabId === undefined) return { success: false, error: 'No tab to include.' };
+      return includeTab(tabId, 'manual');
+    }
+
+    case 'dismissOffer':
+      if (sender.tab) {
+        dismissedOffers.add(sender.tab.id);
+        await closeBanner(sender.tab.id);
+      }
+      return { success: true };
+
+    case 'isTabRecorded':
+      return { success: true, recorded: !!sender.tab && isRecordedTab(sender.tab.id) };
 
     case 'openReport':
       await openReport(message.sessionId);
       return { success: true };
 
     case 'captureAction':
-      if (!isRecording || !sender.tab || sender.tab.id !== recordingTabId) {
+      if (!sender.tab || !isRecordedTab(sender.tab.id)) {
         return { success: true, ignored: true };
       }
       await captureAction(message.data, sender.tab, sender.frameId || 0);
       return { success: true };
 
     case 'framesChanged':
-      if (isRecording && sender.tab && sender.tab.id === recordingTabId) {
+      if (sender.tab && isRecordedTab(sender.tab.id)) {
         await injectMissingFrames(sender.tab.id);
       }
       return { success: true };
@@ -386,6 +523,7 @@ async function beginRecording(settings) {
       captureNavigation: settings.captureNavigation !== false,
       autoScreenshot: settings.autoScreenshot !== false
     },
+    tabs: [{ tabId: tab.id, title: tab.title || tab.url, url: tab.url, includedAt: Date.now(), reason: 'start' }],
     actions: [],
     screenshots: [],
     skippedScreenshots: 0
@@ -393,7 +531,9 @@ async function beginRecording(settings) {
 
   isRecording = true;
   isPaused = false;
-  recordingTabId = tab.id;
+  recordedTabs = [tab.id];
+  lastActiveRecordedTab = tab.id;
+  dismissedOffers.clear();
   recordingData = data;
   lastCaptureTime = 0;
   lastHistoryUrl = tab.url;
@@ -402,7 +542,8 @@ async function beginRecording(settings) {
   await chrome.storage.local.set({
     isRecording: true,
     isPaused: false,
-    recordingTabId,
+    recordedTabs,
+    lastActiveRecordedTab,
     recordingData: data,
     ...data.settings
   });
@@ -422,11 +563,14 @@ async function beginRecording(settings) {
 async function resetState() {
   isRecording = false;
   isPaused = false;
-  recordingTabId = null;
+  recordedTabs = [];
+  lastActiveRecordedTab = null;
   recordingData = null;
+  for (const tabId of Array.from(bannerTabs)) await closeBanner(tabId);
+  dismissedOffers.clear();
   setBadge();
   await chrome.storage.local.set({
-    isRecording: false, isPaused: false, recordingTabId: null, recordingData: null
+    isRecording: false, isPaused: false, recordedTabs: [], lastActiveRecordedTab: null, recordingData: null
   });
 }
 
@@ -468,13 +612,33 @@ function summarize(data) {
     endTime: data.endTime,
     actionCount: data.actions.length,
     screenshotCount: data.screenshots.length,
-    skippedScreenshots: data.skippedScreenshots || 0
+    skippedScreenshots: data.skippedScreenshots || 0,
+    tabCount: data.tabs ? data.tabs.length : 1
   };
 }
 
 // ---------------------------------------------------------------------------
 // Actions and screenshots
 // ---------------------------------------------------------------------------
+// Record an action that has no screenshot of its own (tab bookkeeping).
+async function logAction(actionData, tabId) {
+  const data = recordingData;
+  if (!data) return;
+  data.actions.push({
+    timestamp: Date.now(),
+    type: actionData.type,
+    details: actionData.details || {},
+    url: actionData.details?.url || '',
+    title: actionData.details?.title || '',
+    tabId,
+    frameId: 0,
+    elementPosition: null,
+    sentAt: Date.now()
+  });
+  await persist(data);
+  chrome.runtime.sendMessage({ action: 'recordingUpdate', summary: summarize(data) }).catch(() => {});
+}
+
 async function captureAction(actionData, tab, frameId = 0) {
   const data = recordingData;
   const action = {
@@ -483,6 +647,7 @@ async function captureAction(actionData, tab, frameId = 0) {
     details: actionData.details || {},
     url: tab.url,
     title: tab.title,
+    tabId: tab.id,
     frameId,
     elementPosition: actionData.elementPosition || null,
     sentAt: actionData.sentAt || Date.now()
@@ -594,6 +759,7 @@ async function doCapture(data, tabId, action, crop) {
     isCropped: crop,
     url: action.url,
     title: action.title,
+    tabId: action.tabId,
     actionType: action.type,
     marker: marker || null, // where the click marker was drawn, in image pixels
     caption: describeAction(action)
@@ -671,7 +837,17 @@ function describeAction(action) {
         case 'hashchange':
         case 'history':
         case 'view_settled': return `View changed: ${title}`;
+        case 'tab_switch': return `Tab: ${title}`;
         default: return `Screen: ${title}`;
+      }
+    }
+    case 'tab': {
+      const title = d.title || d.url || 'tab';
+      switch (d.type) {
+        case 'tab_included': return d.reason === 'opened' ? `Opened in a new tab: ${title}` : `Added tab: ${title}`;
+        case 'tab_switch': return `Switched to tab: ${title}`;
+        case 'tab_closed': return `Closed tab: ${title}`;
+        default: return `Tab: ${title}`;
       }
     }
     default:

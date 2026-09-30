@@ -57,9 +57,19 @@ async function renderSession(s) {
     return;
   }
 
-  for (let i = 0; i < shots.length; i++) {
-    const shot = shots[i];
-    const step = buildStep(i + 1, shot);
+  // Tab changes are shown as dividers between the screenshots, in time order.
+  const dividers = (s.actions || []).filter((a) => a.type === 'tab' && a.details?.type !== 'tab_closed');
+  const items = [...shots.map((shot) => ({ kind: 'shot', at: shot.timestamp, shot })), ...dividers.map((a) => ({ kind: 'tab', at: a.timestamp, action: a }))]
+    .sort((a, b) => a.at - b.at);
+
+  let number = 0;
+  for (const item of items) {
+    if (item.kind === 'tab') {
+      page.append(buildDivider(item.action));
+      continue;
+    }
+    const shot = item.shot;
+    const step = buildStep(++number, shot);
     page.append(step);
     const img = step.querySelector('img');
     try {
@@ -91,8 +101,9 @@ function buildHeader(s) {
   const link = document.createElement('a');
   link.href = s.url || '#';
   link.textContent = s.url || '';
+  const tabs = (s.tabs || []).length;
   meta.append(
-    `${new Date(s.startTime).toLocaleString()} · ${formatDuration(duration)} · ${(s.screenshots || []).length} screens · ${(s.actions || []).length} actions`,
+    `${new Date(s.startTime).toLocaleString()} · ${formatDuration(duration)} · ${(s.screenshots || []).length} screens · ${(s.actions || []).length} actions${tabs > 1 ? ` \u00b7 ${tabs} tabs` : ''}`,
     document.createElement('br'),
     link
   );
@@ -110,6 +121,24 @@ function buildHeader(s) {
     header.append(note);
   }
   return header;
+}
+
+function buildDivider(action) {
+  const d = action.details || {};
+  const div = document.createElement('div');
+  div.className = 'divider';
+  const label = d.type === 'tab_included'
+    ? (d.reason === 'opened' ? 'Opened in a new tab' : 'Added tab')
+    : 'Switched to tab';
+  const strong = document.createElement('strong');
+  strong.textContent = `${label}: `;
+  const title = document.createElement('span');
+  title.textContent = d.title || d.url || '';
+  const url = document.createElement('span');
+  url.className = 'url';
+  url.textContent = d.url ? shortUrl(d.url) : '';
+  div.append(strong, title, url);
+  return div;
 }
 
 function buildStep(number, shot) {

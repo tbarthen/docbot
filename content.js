@@ -65,7 +65,7 @@
             sendAction('navigation', {
               url: window.location.href,
               title: document.title,
-              type: 'view_settled'
+              type: message.type || 'view_settled'
             }, null, null, true);
           });
         }
@@ -118,9 +118,14 @@
       useRealisticData: result.useRealisticData !== false
     };
     if (!result.isRecording) return; // injected only for the context menu
-    recording = true;
-    paused = !!result.isPaused;
-    initializeCapture();
+    // Only tabs that are part of the recording capture anything; a tab that
+    // got the script for the context menu must not start holding clicks.
+    chrome.runtime.sendMessage({ action: 'isTabRecorded' }, (reply) => {
+      if (chrome.runtime.lastError || disposed || !reply?.recorded) return;
+      recording = true;
+      paused = !!result.isPaused;
+      initializeCapture();
+    });
   });
 
   function initializeCapture() {
