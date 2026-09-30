@@ -14,6 +14,8 @@
   const MAX_LABEL_LENGTH = 80;             // longer click targets get no text in the log
   const cleanups = new Set();
   let disposed = false;
+  let isTopFrame = true;
+  try { isTopFrame = window === window.top; } catch (_) { isTopFrame = false; }
 
   function on(target, type, handler, options) {
     target.addEventListener(type, handler, options);
@@ -69,6 +71,18 @@
         }
         sendResponse({ ok: true });
         return;
+      case 'watchForSettle':
+        // A click happened inside one of our frames; if this page changes as a
+        // result, capture it once it settles (the frame watches itself too).
+        if (recording && !paused) {
+          if (cancelPendingSettle) cancelPendingSettle();
+          cancelPendingSettle = waitForStabilization(snapshotVisibleContent(), { delay: 600, maxWait: 2000 }, () => {
+            sendAction('navigation', { url: window.location.href, title: document.title, type: 'post_click_state' }, null, null, true);
+          });
+        }
+        sendResponse({ ok: true });
+        return;
+
       case 'fillClickedField':
         if (typeof AutoFill === 'undefined') {
           sendResponse({ success: false, error: 'AutoFill module not loaded' });
@@ -117,6 +131,8 @@
       captureHistoryNavigation();
     }
     if (settings.enableAutoFill) setupAutoFill();
+    watchForNewFrames();
+    answerFramePositionQueries();
 
     const onStorageChanged = (changes) => {
       if (changes.isRecording && !changes.isRecording.newValue) cleanup();
@@ -124,6 +140,80 @@
     };
     chrome.storage.onChanged.addListener(onStorageChanged);
     cleanups.add(() => chrome.storage.onChanged.removeListener(onStorageChanged));
+  }
+
+  // -------------------------------------------------------------------------
+  // Frames
+  // -------------------------------------------------------------------------
+  // A click inside a frame has coordinates relative to that frame. To place
+  // the marker on the whole-tab screenshot, the frame asks its parent where it
+  // sits (window.postMessage works across origins); the parent finds the
+  // <iframe> whose contentWindow sent the question, adds its own offset if it
+  // is itself a frame, and answers. No answer within the timeout means the
+  // click is recorded with a full-screen capture instead of a close-up.
+  const FRAME_QUERY = '__docbot_frame_query__';
+  const FRAME_REPLY = '__docbot_frame_reply__';
+  const FRAME_QUERY_TIMEOUT_MS = 400;
+
+  function answerFramePositionQueries() {
+    on(window, 'message', (event) => {
+      const d = event.data;
+      if (!d || typeof d !== 'object' || d.type !== FRAME_QUERY) return;
+      let host = null;
+      for (const el of document.querySelectorAll('iframe, frame')) {
+        if (el.contentWindow === event.source) { host = el; break; }
+      }
+      if (!host) return;
+      const rect = host.getBoundingClientRect();
+      const local = { x: rect.left + host.clientLeft, y: rect.top + host.clientTop };
+      const reply = (offset) => {
+        try { event.source.postMessage({ type: FRAME_REPLY, nonce: d.nonce, offset }, '*'); } catch (_) { /* frame gone */ }
+      };
+      if (isTopFrame) reply(local);
+      else resolveOwnOffset().then((mine) => reply(mine ? { x: local.x + mine.x, y: local.y + mine.y } : null));
+    });
+  }
+
+  // Resolves to this frame's content-box position in the top-level viewport, or null.
+  function resolveOwnOffset() {
+    if (isTopFrame) return Promise.resolve({ x: 0, y: 0 });
+    return new Promise((resolve) => {
+      const nonce = Math.random().toString(36).slice(2);
+      let timer = null;
+      const finish = (value) => {
+        window.removeEventListener('message', onReply);
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const onReply = (event) => {
+        const d = event.data;
+        if (event.source === window.parent && d && typeof d === 'object' && d.type === FRAME_REPLY && d.nonce === nonce) {
+          finish(d.offset && typeof d.offset.x === 'number' ? d.offset : null);
+        }
+      };
+      window.addEventListener('message', onReply);
+      timer = setTimeout(() => finish(null), FRAME_QUERY_TIMEOUT_MS);
+      try { window.parent.postMessage({ type: FRAME_QUERY, nonce }, '*'); } catch (_) { finish(null); }
+    });
+  }
+
+  // Frames added after injection need the content script too; the background
+  // worker injects into whichever frames don't answer a ping.
+  function watchForNewFrames() {
+    let timer = null;
+    const observer = new MutationObserver((mutations) => {
+      const added = mutations.some((m) => Array.from(m.addedNodes).some((node) =>
+        node.nodeType === Node.ELEMENT_NODE && (node.matches('iframe, frame') || node.querySelector('iframe, frame'))
+      ));
+      if (!added) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (disposed || !chrome.runtime?.id) return;
+        try { chrome.runtime.sendMessage({ action: 'framesChanged' }).catch(() => {}); } catch (_) { /* ignore */ }
+      }, 300);
+    });
+    if (document.documentElement) observer.observe(document.documentElement, { childList: true, subtree: true });
+    cleanups.add(() => { observer.disconnect(); clearTimeout(timer); });
   }
 
   // -------------------------------------------------------------------------
@@ -159,7 +249,7 @@
     if (cancelPendingSettle) cancelPendingSettle();
     const beforeSnapshot = snapshotVisibleContent();
 
-    sendAction('click', details, position, () => {
+    const replay = () => {
       // Replay the click whether or not the screenshot succeeded, and even if
       // the recording stopped in the meantime; the user's click must land.
       // If the page re-rendered the element while we held the click, aim at
@@ -194,6 +284,24 @@
           trigger: details.text
         }, null, null, true);
       });
+    };
+
+    if (isTopFrame) {
+      position.translated = true;
+      sendAction('click', details, position, replay);
+      return;
+    }
+    resolveOwnOffset().then((offset) => {
+      if (offset) {
+        position.x += offset.x;
+        position.y += offset.y;
+        position.translated = true;
+        position.frameOffset = offset;
+        sendAction('click', details, position, replay);
+      } else {
+        details.type = 'frame_click_fullscreen';
+        sendAction('click', details, null, replay);
+      }
     });
   }
 
@@ -289,7 +397,8 @@
         sendAction('navigation', {
           url: window.location.href,
           title: document.title,
-          type: 'page_load'
+          type: isTopFrame ? 'page_load' : 'frame_load',
+          frame: isTopFrame ? undefined : { width: window.innerWidth, height: window.innerHeight }
         }, null, null, true);
       }, 400);
     };

@@ -43,6 +43,25 @@ const routes = {
        history.pushState({}, '', location.pathname + '?filter=on');
      });`),
 
+  // Frames: a cross-origin frame (localhost vs 127.0.0.1), a nested frame, a
+  // sandboxed frame that cannot run scripts, and a button that adds a frame.
+  '/frames': shell('Portal with frames', `
+    <button id="topbtn">Top-level button</button>
+    <div style="display:flex;gap:30px;margin-top:20px;align-items:flex-start">
+      <iframe id="f1" src="http://localhost:8765/form" style="width:800px;height:420px;border:6px solid #999"></iframe>
+      <iframe id="sandboxed" sandbox srcdoc="<p style='font-family:Arial'>Sandboxed frame, no scripts allowed.</p>" style="width:220px;height:120px;border:1px solid #ccc"></iframe>
+    </div>
+    <iframe id="f2" src="/nested" style="width:700px;height:360px;border:2px solid #c66;margin-top:20px"></iframe>
+    <p><button id="addframe">Add a frame</button></p>
+    <div id="dyn"></div>`,
+    `document.getElementById('addframe').addEventListener('click', () => {
+       const f = document.createElement('iframe'); f.id = 'f3'; f.src = '/form'; f.style.cssText = 'width:600px;height:300px;border:2px solid #6a6';
+       document.getElementById('dyn').appendChild(f);
+     });`),
+
+  '/nested': shell('Nested holder', `<p style="margin:0 0 10px">This page holds another frame.</p>
+    <iframe id="inner" src="/form" style="width:560px;height:220px;border:3px solid #66c;margin-left:40px"></iframe>`),
+
   '/rerender': shell('Re-render test', `<div id="wrap"><button id="rb">Re-render me</button></div><p id="count">Clicks: 0</p>`,
     `window.__clicks = 0;
      // The button replaces itself shortly after it receives focus (which happens on
@@ -67,7 +86,8 @@ export function startSite(port = 8765) {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(html);
   });
-  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+  // No host: listen on IPv4 and IPv6 so both 127.0.0.1 and localhost work (they are different origins).
+  return new Promise((resolve) => server.listen(port, () => resolve(server)));
 }
 
 if (process.argv[1] && process.argv[1].endsWith('site.mjs')) {

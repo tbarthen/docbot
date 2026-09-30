@@ -114,6 +114,81 @@ check(s.skipped > 0, `stale close-ups were skipped and counted (skipped=${s.skip
 console.log(`     ${s.shots.length - before} screenshots for 6 rapid clicks`);
 
 // ---------------------------------------------------------------------------
+console.log('\n4b. Embedded frames');
+await page.goto(`${SITE}/frames`); await sleep(2500);
+const frames = await sw.evaluate(async () => {
+  const all = await chrome.webNavigation.getAllFrames({ tabId: recordingTabId });
+  const out = [];
+  for (const f of all) {
+    const ping = await chrome.tabs.sendMessage(recordingTabId, { action: 'ping' }, { frameId: f.frameId }).catch(() => null);
+    out.push({ frameId: f.frameId, parent: f.parentFrameId, url: f.url, injected: !!(ping && ping.recording) });
+  }
+  return out;
+});
+check(frames.length >= 5, `all frames enumerated, sandboxed one included (${frames.length})`);
+const webFrames = frames.filter((f) => /^https?:/.test(f.url));
+check(webFrames.length === 4 && webFrames.every((f) => f.injected), `content script present in every web frame (${webFrames.filter((f) => f.injected).length}/${webFrames.length})`);
+
+const beforeFrames = (await swState()).shots.length;
+// Click inside the cross-origin frame. Playwright reports the box in top-level coordinates.
+const f1Btn = page.frameLocator('#f1').locator('#submit');
+const f1Box = await f1Btn.boundingBox();
+await f1Btn.click();
+await sleep(1500);
+let frameClick = await sw.evaluate(() => {
+  const a = recordingData.actions.filter((x) => x.type === 'click' && x.frameId).pop();
+  const shot = recordingData.screenshots.filter((x) => x.isCropped).pop();
+  return { pos: a?.elementPosition, caption: shot?.caption, marker: shot?.marker, id: shot?.id };
+});
+const expectX = f1Box.x + f1Box.width / 2, expectY = f1Box.y + f1Box.height / 2;
+check(frameClick.pos && Math.abs(frameClick.pos.x - expectX) < 3 && Math.abs(frameClick.pos.y - expectY) < 3,
+  `cross-origin frame click translated to page coordinates (got ${frameClick.pos?.x},${frameClick.pos?.y} expected ${expectX.toFixed(0)},${expectY.toFixed(0)})`);
+check(frameClick.caption === 'Clicked "Continue" (embedded frame)', `caption: ${frameClick.caption}`);
+const centroid = await sw.evaluate(async (id) => {
+  const row = await DocBotDB.getScreenshot(id);
+  const bmp = await createImageBitmap(row.blob);
+  const c = new OffscreenCanvas(bmp.width, bmp.height); const x = c.getContext('2d'); x.drawImage(bmp, 0, 0);
+  const d = x.getImageData(0, 0, bmp.width, bmp.height).data; let n = 0, sx = 0, sy = 0;
+  for (let i = 0; i < d.length; i += 4) if (d[i] > 180 && d[i + 1] < 90 && d[i + 2] < 90) { n++; sx += (i / 4) % bmp.width; sy += Math.floor(i / 4 / bmp.width); }
+  return n ? { x: sx / n, y: sy / n, n } : null;
+}, frameClick.id);
+check(centroid && Math.abs(centroid.x - frameClick.marker.x) < 4 && Math.abs(centroid.y - frameClick.marker.y) < 4,
+  `red marker drawn where intended in the close-up (centroid ${centroid?.x.toFixed(0)},${centroid?.y.toFixed(0)} vs ${frameClick.marker?.x},${frameClick.marker?.y})`);
+await page.frameLocator('#f1').locator('text=Enrollment complete').waitFor();
+await sleep(2500);
+s = await swState();
+check(s.shots.some((x) => x.caption === 'Embedded page: Enrollment complete'), 'a large frame navigating counts as a new screen');
+
+// Nested frame (frame inside a frame).
+// The button sits below the inner frame's visible area, so the frame scrolls
+// before the click; measure after that scroll, as the extension sees it.
+const innerBtn = page.frameLocator('#f2').frameLocator('#inner').locator('#submit');
+await innerBtn.scrollIntoViewIfNeeded();
+const innerBox = await innerBtn.boundingBox();
+await innerBtn.click();
+await sleep(1500);
+frameClick = await sw.evaluate(() => recordingData.actions.filter((x) => x.type === 'click' && x.frameId).pop().elementPosition);
+check(Math.abs(frameClick.x - (innerBox.x + innerBox.width / 2)) < 3 && Math.abs(frameClick.y - (innerBox.y + innerBox.height / 2)) < 3,
+  `nested frame click translated through both parents (got ${frameClick.x},${frameClick.y} expected ${(innerBox.x + innerBox.width / 2).toFixed(0)},${(innerBox.y + innerBox.height / 2).toFixed(0)})`);
+
+// A frame added after the page loaded gets the content script too.
+await page.click('#addframe'); await sleep(2500);
+const dyn = await sw.evaluate(async () => {
+  const all = await chrome.webNavigation.getAllFrames({ tabId: recordingTabId });
+  const f = all.filter((x) => x.url.endsWith('/form')).pop();
+  const ping = f ? await chrome.tabs.sendMessage(recordingTabId, { action: 'ping' }, { frameId: f.frameId }).catch(() => null) : null;
+  return !!(ping && ping.recording);
+});
+check(dyn, 'frame added by the page after load is recorded too');
+const f3Btn = page.frameLocator('#f3').locator('#fn');
+await f3Btn.click(); await sleep(1200);
+s = await swState();
+check(s.shots.filter((x) => x.crop).pop()?.caption === 'Clicked "First name" (embedded frame)', 'click inside the added frame produces a close-up');
+check(!s.actions.some((a) => a.sub === 'frame_click_fullscreen'), 'no frame click had to fall back to a full-screen capture');
+console.log(`     ${s.shots.length - beforeFrames} screenshots for the frames page`);
+await page.goto(`${SITE}/`); await sleep(1500);
+
+// ---------------------------------------------------------------------------
 console.log('\n5. Pause and markers');
 await sw.evaluate(() => setPaused(true));
 await sleep(300);

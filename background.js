@@ -13,6 +13,7 @@ const CAPTURE_SPACING_MS = 550;  // Chrome allows two captureVisibleTab calls pe
 const FULL_DEDUPE_WINDOW_MS = 2500; // a full capture of the same URL inside this window replaces the previous one
 const SESSIONS_TO_KEEP = 3;
 const STALE_CROP_MS = 1500;      // matches the content script's click hold; a crop older than this is skipped
+const MIN_FRAME_AREA = 0.2;      // a frame smaller than this share of the tab is not a "screen" when it loads
 
 // ---------------------------------------------------------------------------
 // State. Everything here is also mirrored to chrome.storage.local so a
@@ -155,9 +156,9 @@ chrome.commands.onCommand.addListener(async (command) => {
 // ---------------------------------------------------------------------------
 // Content script injection
 // ---------------------------------------------------------------------------
-async function isInjected(tabId) {
+async function isInjected(tabId, frameId = 0) {
   try {
-    const response = await chrome.tabs.sendMessage(tabId, { action: 'ping' });
+    const response = await chrome.tabs.sendMessage(tabId, { action: 'ping' }, { frameId });
     // An instance injected only for the context menu must be replaced while recording.
     return !!(response && response.ok && (!isRecording || response.recording));
   } catch {
@@ -165,16 +166,60 @@ async function isInjected(tabId) {
   }
 }
 
-async function injectContentScripts(tabId) {
+async function injectFrame(tabId, frameId) {
   // autofill.js first; content.js depends on it.
-  await chrome.scripting.executeScript({ target: { tabId }, files: ['autofill.js'] });
-  await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+  await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['autofill.js'] });
+  await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['content.js'] });
+}
+
+// The top frame must succeed; child frames are best effort (a sandboxed or
+// otherwise unscriptable frame is simply skipped).
+async function injectContentScripts(tabId) {
+  await injectFrame(tabId, 0);
+  await injectMissingFrames(tabId);
 }
 
 async function ensureInjected(tabId) {
-  if (await isInjected(tabId)) return;
-  await injectContentScripts(tabId);
+  if (!(await isInjected(tabId))) await injectFrame(tabId, 0);
+  await injectMissingFrames(tabId);
 }
+
+// Inject into every child frame that does not answer a ping. Idempotent. One
+// pass runs per tab at a time; a request that arrives mid-pass schedules
+// another pass, so a frame that committed during the pass is not missed.
+const frameInjections = new Map();
+function injectMissingFrames(tabId) {
+  const running = frameInjections.get(tabId);
+  if (running) {
+    running.again = true;
+    return running.job;
+  }
+  const entry = { again: false };
+  entry.job = (async () => {
+    do {
+      entry.again = false;
+      await injectFramesPass(tabId);
+    } while (entry.again);
+  })().finally(() => frameInjections.delete(tabId));
+  frameInjections.set(tabId, entry);
+  return entry.job;
+}
+
+async function injectFramesPass(tabId) {
+  const frames = await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null);
+  if (!frames) return;
+  for (const frame of frames) {
+    if (frame.frameId === 0 || frame.errorOccurred) continue;
+    if (!/^(https?:|about:|blob:)/i.test(frame.url)) continue;
+    if (await isInjected(tabId, frame.frameId)) continue;
+    try {
+      await injectFrame(tabId, frame.frameId);
+    } catch (error) {
+      console.warn(`DocBot: frame ${frame.frameId} (${frame.url}) not injected: ${error.message}`);
+    }
+  }
+}
+
 
 function isRecordableUrl(url) {
   return typeof url === 'string' && /^https?:\/\//i.test(url);
@@ -184,10 +229,18 @@ function isRecordableUrl(url) {
 // so re-inject. Same-document navigations answer the ping and are skipped.
 chrome.webNavigation.onCommitted.addListener(async (details) => {
   await ready;
-  if (!isRecording || details.tabId !== recordingTabId || details.frameId !== 0) return;
-  if (!isRecordableUrl(details.url)) return;
+  if (!isRecording || details.tabId !== recordingTabId) return;
   try {
-    await ensureInjected(details.tabId);
+    if (details.frameId === 0) {
+      if (isRecordableUrl(details.url)) await ensureInjected(details.tabId);
+    } else {
+      // A child frame committed a new document: inject that frame directly,
+      // then sweep for any others that appeared meanwhile.
+      if (/^(https?:|about:|blob:)/i.test(details.url) && !(await isInjected(details.tabId, details.frameId))) {
+        await injectFrame(details.tabId, details.frameId).catch((error) => console.warn(`DocBot: frame ${details.frameId} not injected: ${error.message}`));
+      }
+      await injectMissingFrames(details.tabId);
+    }
   } catch (error) {
     console.warn('DocBot: could not inject after navigation', error.message);
   }
@@ -284,7 +337,13 @@ async function handleMessage(message, sender) {
       if (!isRecording || !sender.tab || sender.tab.id !== recordingTabId) {
         return { success: true, ignored: true };
       }
-      await captureAction(message.data, sender.tab);
+      await captureAction(message.data, sender.tab, sender.frameId || 0);
+      return { success: true };
+
+    case 'framesChanged':
+      if (isRecording && sender.tab && sender.tab.id === recordingTabId) {
+        await injectMissingFrames(sender.tab.id);
+      }
       return { success: true };
 
     default:
@@ -416,7 +475,7 @@ function summarize(data) {
 // ---------------------------------------------------------------------------
 // Actions and screenshots
 // ---------------------------------------------------------------------------
-async function captureAction(actionData, tab) {
+async function captureAction(actionData, tab, frameId = 0) {
   const data = recordingData;
   const action = {
     timestamp: Date.now(),
@@ -424,14 +483,36 @@ async function captureAction(actionData, tab) {
     details: actionData.details || {},
     url: tab.url,
     title: tab.title,
+    frameId,
     elementPosition: actionData.elementPosition || null,
     sentAt: actionData.sentAt || Date.now()
   };
   data.actions.push(action);
 
   // Policy: one cropped capture per click, one full capture per new screen.
-  const wantCrop = action.type === 'click' && data.settings.autoScreenshot && !!action.elementPosition;
-  const wantFull = action.type === 'navigation' && !!actionData.captureScreenshot;
+  let wantCrop = action.type === 'click' && data.settings.autoScreenshot && !!action.elementPosition;
+  let wantFull = action.type === 'navigation' && !!actionData.captureScreenshot;
+
+  if (action.type === 'click' && frameId !== 0) {
+    // The click came from an embedded frame. The content script translates
+    // the coordinates to the top-level viewport; if it could not, take a
+    // full-screen capture rather than a close-up of the wrong place.
+    if (!action.elementPosition?.translated) {
+      action.elementPosition = null;
+      if (wantCrop && data.settings.autoScreenshot) wantFull = true;
+      wantCrop = false;
+      action.details.type = 'frame_click_fullscreen';
+    }
+    // The outer page may change in response; let it watch for that.
+    chrome.tabs.sendMessage(tab.id, { action: 'watchForSettle' }, { frameId: 0 }).catch(() => {});
+  }
+
+  if (action.type === 'navigation' && action.details.type === 'frame_load') {
+    // A frame finishing a load is a new screen only if it takes up real space.
+    const f = action.details.frame;
+    const share = f && tab.width && tab.height ? (f.width * f.height) / (tab.width * tab.height) : 0;
+    wantFull = wantFull && share >= MIN_FRAME_AREA;
+  }
 
   if (isPaused) {
     action.paused = true; // logged, but no screenshot while paused
@@ -485,7 +566,7 @@ async function doCapture(data, tabId, action, crop) {
   const rawDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality });
 
   // The bitmap is in device pixels; tab.width is CSS pixels.
-  const blob = await processCapture(rawDataUrl, {
+  const { blob, marker } = await processCapture(rawDataUrl, {
     cssWidth: tab.width,
     clickPosition: crop ? action.elementPosition : null,
     drawMarker: clickMarkers !== false,
@@ -514,6 +595,7 @@ async function doCapture(data, tabId, action, crop) {
     url: action.url,
     title: action.title,
     actionType: action.type,
+    marker: marker || null, // where the click marker was drawn, in image pixels
     caption: describeAction(action)
   };
   data.screenshots.push(shot);
@@ -563,7 +645,8 @@ async function processCapture(dataUrl, { cssWidth, clickPosition, drawMarker = t
       ctx.stroke();
     }
 
-    return canvas.convertToBlob({ type: 'image/jpeg', quality: quality / 100 });
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: quality / 100 });
+    return { blob, marker: marker && drawMarker ? { x: Math.round(marker.x), y: Math.round(marker.y) } : null };
   } finally {
     bitmap.close();
   }
@@ -574,14 +657,16 @@ function describeAction(action) {
   switch (action.type) {
     case 'click': {
       const text = (d.text || '').trim();
-      if (text) return `Clicked "${text.length > 60 ? text.slice(0, 57) + '...' : text}"`;
       const tag = (d.tagName || 'element').toLowerCase();
-      return d.id ? `Clicked ${tag} #${d.id}` : `Clicked ${tag}`;
+      let label = text ? `Clicked "${text.length > 60 ? text.slice(0, 57) + '...' : text}"` : (d.id ? `Clicked ${tag} #${d.id}` : `Clicked ${tag}`);
+      if (action.frameId) label += ' (embedded frame)';
+      return label;
     }
     case 'navigation': {
       const title = d.title || action.title || d.url || '';
       switch (d.type) {
         case 'page_load': return `Page: ${title}`;
+        case 'frame_load': return `Embedded page: ${title}`;
         case 'post_click_state': return `Screen after click: ${title}`;
         case 'hashchange':
         case 'history':

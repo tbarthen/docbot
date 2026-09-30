@@ -14,7 +14,7 @@ Closing the recorded tab also ends the recording and opens the report. If the br
 
 The shortcuts can be changed at `chrome://extensions/shortcuts` (useful on Windows with more than one keyboard layout, where Alt+Shift also switches languages).
 
-Only the recorded tab is captured, and only its top-level page: clicks inside embedded iframes are not logged, though full-screen captures still show them.
+Only the recorded tab is captured. Embedded frames (iframes) on that tab are recorded too, including cross-origin and nested ones: clicks inside a frame get a close-up with the marker in the right place, and a large frame loading a new page counts as a new screen. If a frame's position on screen cannot be worked out (for example when its parent page cannot be scripted), the click is recorded with a full-screen capture instead of a close-up, never with a misplaced marker.
 
 ## Install
 
@@ -32,7 +32,7 @@ npm install
 npm test
 ```
 
-`test/e2e.mjs` loads the unpacked extension into Chromium, records a click-through of the local site in `test/site.mjs`, and checks captures, captions, pause, markers, the report, the saved HTML file, and the edge cases from `AUDIT-2.md`. Screenshots of the popup and report land in `test/out/`.
+`test/e2e.mjs` loads the unpacked extension into Chromium, records a click-through of the local site in `test/site.mjs`, and checks captures, captions, pause, markers, frames (cross-origin, nested, sandboxed, added after load), the report, the saved HTML file, and the edge cases from `AUDIT-2.md`. Screenshots of the popup and report land in `test/out/`.
 
 ## Files
 
