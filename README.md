@@ -5,7 +5,7 @@ A Chrome extension that records a click-through of a web application as annotate
 ## How it works
 
 1. Open the page you want to document and click the DocBot toolbar button, then **Record this tab**.
-2. Click through the site. Each click is captured as a close-up with a red marker, and each new screen is captured in full once it has settled. The popup closes; the toolbar icon shows **REC** while recording.
+2. Click through the site. Each click is captured as a close-up with a red marker, and each new screen is captured in full once it has settled (apps that render after the page loads are waited for). Empty margins around a narrow page are trimmed so the content fills the picture. In the report, click any screenshot to see it at full size. The popup closes; the toolbar icon shows **REC** while recording.
 3. To move through pages you don't want in the document, click **Pause screenshots** in the popup or press **Alt+Shift+P**; the toolbar badge shows **II**. Press it again to resume.
 4. Reopen the popup (from any tab) and click **Stop & open report**, or press **Alt+Shift+R**.
 5. The report opens in a new tab. **Save as HTML** downloads one self-contained file with the images embedded. **Print / Save as PDF** uses Chrome's print dialog.

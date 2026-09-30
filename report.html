@@ -7,7 +7,7 @@
   <style id="reportStyles">
     * { box-sizing: border-box; }
     body { font-family: Arial, Helvetica, sans-serif; color: #212529; background: #f1f3f5; margin: 0; }
-    .page { max-width: 1000px; margin: 0 auto; padding: 24px 20px 60px; }
+    .page { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
     .toolbar {
       position: sticky; top: 0; z-index: 10;
       background: #fff; border-bottom: 1px solid #dee2e6;
@@ -29,14 +29,16 @@
     .step .caption { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; font-size: 15px; }
     .step .num { display: inline-block; min-width: 28px; height: 28px; line-height: 28px; text-align: center; border-radius: 50%; background: #667eea; color: #fff; font-weight: 700; font-size: 13px; }
     .step .url { color: #868e96; font-size: 12px; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
-    .step img { display: block; max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 4px; }
+    .step img { display: block; max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 4px; cursor: zoom-in; }
+    .lightbox { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,0.85); display: flex; align-items: flex-start; justify-content: center; overflow: auto; padding: 24px; cursor: zoom-out; }
+    .lightbox img { max-width: none; box-shadow: 0 4px 30px rgba(0,0,0,0.5); }
     .step.crop img { max-width: 100%; }
     .empty { background: #fff; border-radius: 8px; padding: 30px; text-align: center; color: #6c757d; }
     .divider { display: flex; align-items: baseline; gap: 8px; margin: 22px 0 14px; padding: 8px 14px; border-left: 4px solid #667eea; background: #eef0fb; border-radius: 4px; font-size: 14px; break-after: avoid; }
     .divider .url { color: #868e96; font-size: 12px; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
     @media print {
       body { background: #fff; }
-      .toolbar { display: none; }
+      .toolbar, .lightbox { display: none; }
       .page { max-width: none; padding: 0; }
       .report-header, .step { box-shadow: none; border: 1px solid #dee2e6; }
       .step img { max-height: 9in; object-fit: contain; }

@@ -11,9 +11,12 @@ const CROP_HEIGHT = 400;
 const CROP_CLICK_OFFSET = 0.75;  // the click sits 75% from the left edge of the crop
 const CAPTURE_SPACING_MS = 550;  // Chrome allows two captureVisibleTab calls per second
 const FULL_DEDUPE_WINDOW_MS = 2500; // a full capture of the same URL inside this window replaces the previous one
+const PAGE_LOAD_REPLACE_MS = 15000; // a later page-load capture of the same page replaces the earlier one within this window
 const SESSIONS_TO_KEEP = 3;
 const STALE_CROP_MS = 1500;      // matches the content script's click hold; a crop older than this is skipped
 const MIN_FRAME_AREA = 0.2;      // a frame smaller than this share of the tab is not a "screen" when it loads
+const TRIM_PADDING = 24;         // CSS px kept around the page content when empty margins are trimmed
+const TRIM_THRESHOLD = 40;       // how different a pixel must be from the background to count as content
 
 // ---------------------------------------------------------------------------
 // State. Everything here is also mirrored to chrome.storage.local so a
@@ -742,12 +745,19 @@ async function doCapture(data, tabId, action, crop) {
   const id = `${data.sessionId}_${now}_${crop ? 'click' : 'page'}`;
 
   // A second full capture of the same URL within a short window means the
-  // page was still settling; keep only the later one.
+  // page was still settling; keep only the later one. A page-load capture
+  // that follows another page-load capture of the same page (the app kept
+  // rendering) replaces it within a longer window.
   if (!crop) {
     const last = data.screenshots[data.screenshots.length - 1];
-    if (last && !last.isCropped && last.url === action.url && now - last.timestamp < FULL_DEDUPE_WINDOW_MS) {
-      data.screenshots.pop();
-      await DocBotDB.deleteScreenshot(last.id).catch(() => {});
+    const kind = action.details?.type;
+    if (last && !last.isCropped && last.url === action.url && last.tabId === action.tabId) {
+      const age = now - last.timestamp;
+      const sameLoad = last.kind === 'page_load' && kind === 'page_load';
+      if (age < FULL_DEDUPE_WINDOW_MS || (sameLoad && age < PAGE_LOAD_REPLACE_MS)) {
+        data.screenshots.pop();
+        await DocBotDB.deleteScreenshot(last.id).catch(() => {});
+      }
     }
   }
 
@@ -761,6 +771,7 @@ async function doCapture(data, tabId, action, crop) {
     title: action.title,
     tabId: action.tabId,
     actionType: action.type,
+    kind: action.details?.type || null,
     marker: marker || null, // where the click marker was drawn, in image pixels
     caption: describeAction(action)
   };
@@ -789,9 +800,13 @@ async function processCapture(dataUrl, { cssWidth, clickPosition, drawMarker = t
       dh = Math.round(sh / dpr);
       marker = { x: (cx - sx) / dpr, y: (cy - sy) / dpr };
     } else {
-      const scale = Math.min(1, 1 / dpr, MAX_FULL_WIDTH / bitmap.width);
-      dw = Math.round(bitmap.width * scale);
-      dh = Math.round(bitmap.height * scale);
+      // A narrow page on a wide screen is mostly empty margin; cut that away
+      // so the content, not the viewport, fills the picture.
+      const box = findContentBox(bitmap, Math.round(TRIM_PADDING * dpr));
+      if (box) ({ x: sx, y: sy, width: sw, height: sh } = box);
+      const scale = Math.min(1, 1 / dpr, MAX_FULL_WIDTH / sw);
+      dw = Math.round(sw * scale);
+      dh = Math.round(sh * scale);
     }
 
     const canvas = new OffscreenCanvas(dw, dh);
@@ -816,6 +831,59 @@ async function processCapture(dataUrl, { cssWidth, clickPosition, drawMarker = t
   } finally {
     bitmap.close();
   }
+}
+
+// Bounding box of everything that differs from the page background, in
+// bitmap pixels, with padding. The background colour is the most common
+// colour along the edges. Returns null when there is nothing to trim or the
+// page has no uniform background (a photo or gradient), so nothing is lost.
+function findContentBox(bitmap, padding) {
+  const step = 4; // analyse at quarter resolution; plenty for margins
+  const w = Math.max(1, Math.floor(bitmap.width / step));
+  const h = Math.max(1, Math.floor(bitmap.height / step));
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const at = (x, y) => (y * w + x) * 4;
+
+  // Background = most common edge colour (quantised).
+  const counts = new Map();
+  const edge = [];
+  for (let x = 0; x < w; x++) edge.push([x, 0], [x, h - 1]);
+  for (let y = 0; y < h; y++) edge.push([0, y], [w - 1, y]);
+  for (const [x, y] of edge) {
+    const i = at(x, y);
+    const key = `${data[i] >> 3},${data[i + 1] >> 3},${data[i + 2] >> 3}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  let bgKey = null, bgCount = 0;
+  for (const [key, count] of counts) if (count > bgCount) { bgKey = key; bgCount = count; }
+  if (bgCount < edge.length * 0.6) return null; // no dominant background: leave as is
+  const [br, bgc, bb] = bgKey.split(',').map((v) => (Number(v) << 3) + 4);
+
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = at(x, y);
+      if (Math.abs(data[i] - br) + Math.abs(data[i + 1] - bgc) + Math.abs(data[i + 2] - bb) > TRIM_THRESHOLD) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return null; // blank page
+
+  const x0 = Math.max(0, minX * step - padding);
+  const y0 = Math.max(0, minY * step - padding);
+  const x1 = Math.min(bitmap.width, (maxX + 1) * step + padding);
+  const y1 = Math.min(bitmap.height, (maxY + 1) * step + padding);
+  const box = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  // Not worth it unless it removes a real amount of margin.
+  if (box.width > bitmap.width * 0.92 && box.height > bitmap.height * 0.92) return null;
+  return box;
 }
 
 function describeAction(action) {

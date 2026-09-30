@@ -396,16 +396,20 @@
     const fire = () => {
       if (fired || disposed) return;
       fired = true;
-      // Give the page a moment to paint before the full screenshot.
-      setTimeout(() => {
-        if (disposed) return;
-        sendAction('navigation', {
-          url: window.location.href,
-          title: document.title,
-          type: isTopFrame ? 'page_load' : 'frame_load',
-          frame: isTopFrame ? undefined : { width: window.innerWidth, height: window.innerHeight }
-        }, null, null, true);
-      }, 400);
+      // Single-page apps render after the load event, sometimes seconds after.
+      // Wait until the page has stopped changing and shows something before
+      // the first screenshot; if it changes again soon after, capture once
+      // more (the background replaces the earlier picture).
+      const send = () => sendAction('navigation', {
+        url: window.location.href,
+        title: document.title,
+        type: isTopFrame ? 'page_load' : 'frame_load',
+        frame: isTopFrame ? undefined : { width: window.innerWidth, height: window.innerHeight }
+      }, null, null, true);
+      waitForStabilization('', { delay: 800, maxWait: 6000, minWait: 400, force: true, untilContent: true }, () => {
+        send();
+        if (isTopFrame) waitForStabilization(snapshotVisibleContent(), { delay: 800, maxWait: 8000 }, send);
+      });
     };
     if (document.readyState === 'complete') {
       fire();
@@ -464,10 +468,17 @@
     return m.target.offsetHeight > 50 || m.target.offsetWidth > 50;
   }
 
+  function hasVisibleContent() {
+    const body = document.body;
+    if (!body) return false;
+    return (body.innerText || '').trim().length > 20 || body.querySelector('img, canvas, svg, iframe, video') !== null;
+  }
+
   // Calls `callback` once the DOM has been quiet for `delay` ms (or `maxWait`
   // has passed) and, unless `force`, only if the visible content differs from
-  // `before`. Returns a function that cancels the wait.
-  function waitForStabilization(before, { delay, maxWait, minWait = 0, force = false }, callback) {
+  // `before`. With `untilContent`, an empty page keeps waiting (up to
+  // `maxWait`) for something to appear. Returns a function that cancels the wait.
+  function waitForStabilization(before, { delay, maxWait, minWait = 0, force = false, untilContent = false }, callback) {
     const startedAt = Date.now();
     let debounce = null;
     let maxTimer = null;
@@ -492,6 +503,11 @@
         setTimeout(finish, minWait - elapsed);
         return;
       }
+      if (untilContent && elapsed < maxWait && !hasVisibleContent()) {
+        clearTimeout(debounce);
+        debounce = setTimeout(finish, 300);
+        return;
+      }
       stop();
       if (disposed) return;
       if (force || snapshotVisibleContent() !== before) callback();
@@ -503,7 +519,8 @@
     };
 
     maxTimer = setTimeout(finish, maxWait);
-    observer.observe(document.body, {
+    // documentElement rather than body: script loaders add to <head> first.
+    observer.observe(document.documentElement || document.body, {
       childList: true, subtree: true, attributes: true,
       attributeFilter: ['style', 'class', 'hidden', 'aria-expanded']
     });

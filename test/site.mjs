@@ -63,6 +63,20 @@ const routes = {
   '/nested': shell('Nested holder', `<p style="margin:0 0 10px">This page holds another frame.</p>
     <iframe id="inner" src="/form" style="width:560px;height:220px;border:3px solid #66c;margin-left:40px"></iframe>`),
 
+  // A narrow, left-aligned layout on a wide viewport: most of the capture is margin.
+  '/narrow': `<!doctype html><html><head><meta charset="utf-8"><title>Narrow legacy page</title>
+    <style>body{margin:0;font-family:Arial;background:#fff}.wrap{width:700px}.hdr{background:#336;color:#fff;padding:12px}.side{width:120px;float:left;background:#dde;height:260px}.main{margin-left:130px;padding:10px}</style></head>
+    <body><div class="wrap"><div class="hdr">Legacy portal</div><div class="side">Menu</div><div class="main"><h2>Welcome</h2><p>${'Some text. '.repeat(30)}</p><button id="go">Go</button></div></div></body></html>`,
+
+  // Renders its content well after the load event, like a Require.js app.
+  '/lateapp': `<!doctype html><html><head><meta charset="utf-8"><title>Late rendering app</title>
+    <style>body{margin:0;font-family:Arial;background:#fff}#app{padding:24px}.hdr{background:#004b87;color:#fff;padding:14px 24px;font-size:20px}</style></head>
+    <body><div id="loading" class="hidden"></div><div id="app"></div>
+    <script>window.__renderedAt = 0; setTimeout(() => {
+      document.getElementById('app').innerHTML = '<div class="hdr">Dashboard</div><h2>Printer Directory</h2><p>' + 'Rendered after load. '.repeat(40) + '</p><button id="btn">Update Information</button>';
+      window.__renderedAt = Date.now();
+    }, 1800);</script></body></html>`,
+
   '/rerender': shell('Re-render test', `<div id="wrap"><button id="rb">Re-render me</button></div><p id="count">Clicks: 0</p>`,
     `window.__clicks = 0;
      // The button replaces itself shortly after it receives focus (which happens on

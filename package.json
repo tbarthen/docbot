@@ -1,6 +1,6 @@
 {
   "name": "docbot",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "private": true,
   "description": "Chrome extension that records a web app click-through as annotated screenshots",
   "type": "module",

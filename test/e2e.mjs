@@ -86,6 +86,30 @@ check(s.shots.some((x) => !x.crop && x.url.endsWith('/spa/step2')), 'a full capt
 check(!s.shots.some((x) => !x.crop && x.url.includes('filter=on')), 'a query-only change does not add a screenshot');
 
 // ---------------------------------------------------------------------------
+console.log('\n2b. Narrow page on a wide screen: margins are trimmed');
+await page.goto(`${SITE}/narrow`); await sleep(2500);
+let dims = await sw.evaluate(async () => {
+  const shot = recordingData.screenshots.filter((x) => !x.isCropped).pop();
+  const bmp = await createImageBitmap((await DocBotDB.getScreenshot(shot.id)).blob);
+  return { caption: shot.caption, width: bmp.width, height: bmp.height };
+});
+check(dims.caption === 'Page: Narrow legacy page' && dims.width < 800 && dims.width > 700, `capture is the 700px content plus padding, not the 1400px viewport (${dims.width}x${dims.height})`);
+
+// ---------------------------------------------------------------------------
+console.log('\n2c. App that renders after the load event');
+await page.goto(`${SITE}/lateapp`); await sleep(5000);
+const lateApp = await sw.evaluate(async () => {
+  const shot = recordingData.screenshots.filter((x) => !x.isCropped).pop();
+  const bmp = await createImageBitmap((await DocBotDB.getScreenshot(shot.id)).blob);
+  const c = new OffscreenCanvas(bmp.width, bmp.height); const x = c.getContext('2d'); x.drawImage(bmp, 0, 0);
+  const d = x.getImageData(0, 0, bmp.width, bmp.height).data; let dark = 0;
+  for (let i = 0; i < d.length; i += 16) if (d[i] + d[i + 1] + d[i + 2] < 600) dark++;
+  return { caption: shot.caption, darkShare: dark / (d.length / 16), taken: shot.timestamp };
+});
+const renderedAt = await page.evaluate(() => window.__renderedAt);
+check(lateApp.caption === 'Page: Late rendering app' && lateApp.taken > renderedAt && lateApp.darkShare > 0.02, `first screenshot waited for the app to render (taken ${lateApp.taken - renderedAt} ms after render, ${(lateApp.darkShare * 100).toFixed(1)}% content)`);
+
+// ---------------------------------------------------------------------------
 console.log('\n3. Held click still lands when the element re-renders (H3)');
 await page.goto(`${SITE}/rerender`); await sleep(1500);
 await page.click('#rb'); await sleep(600);

@@ -159,8 +159,26 @@ function buildStep(number, shot) {
   const img = document.createElement('img');
   img.alt = shot.caption || `Screenshot ${number}`;
   img.dataset.shotId = shot.id;
+  img.title = 'Click to view at full size';
+  img.addEventListener('click', () => openLightbox(img));
   step.append(caption, img);
   return step;
+}
+
+// Show one screenshot at its real size; click anywhere or press Escape to close.
+function openLightbox(img) {
+  if (!img.src) return;
+  const box = document.createElement('div');
+  box.className = 'lightbox';
+  const full = document.createElement('img');
+  full.src = img.src;
+  full.alt = img.alt;
+  box.append(full);
+  const close = () => { box.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  box.addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  document.body.append(box);
 }
 
 function shortUrl(url) {
