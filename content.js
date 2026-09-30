@@ -27,6 +27,7 @@
   }
   window.__docbotCleanup = cleanup;
 
+  let paused = false;
   let settings = {
     captureClicks: true,
     captureInputs: true,
@@ -70,7 +71,7 @@
   // Boot
   // -------------------------------------------------------------------------
   chrome.storage.local.get([
-    'isRecording', 'captureClicks', 'captureInputs', 'captureNavigation', 'autoScreenshot',
+    'isRecording', 'isPaused', 'captureClicks', 'captureInputs', 'captureNavigation', 'autoScreenshot',
     'recordInputValues', 'enableAutoFill', 'useRealisticData'
   ], (result) => {
     if (chrome.runtime.lastError || disposed) return;
@@ -84,6 +85,7 @@
       useRealisticData: result.useRealisticData !== false
     };
     if (!result.isRecording) return; // injected only for the context menu
+    paused = !!result.isPaused;
     initializeCapture();
   });
 
@@ -98,6 +100,7 @@
 
     const onStorageChanged = (changes) => {
       if (changes.isRecording && !changes.isRecording.newValue) cleanup();
+      if (changes.isPaused) paused = !!changes.isPaused.newValue;
     };
     chrome.storage.onChanged.addListener(onStorageChanged);
     cleanups.push(() => chrome.storage.onChanged.removeListener(onStorageChanged));
@@ -119,9 +122,10 @@
       dpr: window.devicePixelRatio || 1
     };
 
-    // javascript: links cannot be replayed under a strict CSP; log only.
+    // While paused, and for javascript: links (which cannot be replayed under
+    // a strict CSP), log the click and let it through untouched.
     const anchor = target.closest('a[href]');
-    if (anchor && /^javascript:/i.test(anchor.getAttribute('href') || '')) {
+    if (paused || (anchor && /^javascript:/i.test(anchor.getAttribute('href') || ''))) {
       sendAction('click', details, position);
       return;
     }

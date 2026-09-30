@@ -18,6 +18,7 @@ const SESSIONS_TO_KEEP = 3;
 // service worker restart can pick up where it left off.
 // ---------------------------------------------------------------------------
 let isRecording = false;
+let isPaused = false; // recording continues, screenshots are skipped
 let recordingTabId = null;
 let recordingWindowId = null;
 let recordingData = null;
@@ -32,14 +33,15 @@ const ready = restoreState();
 async function restoreState() {
   try {
     const state = await chrome.storage.local.get([
-      'isRecording', 'recordingTabId', 'recordingWindowId', 'recordingData'
+      'isRecording', 'isPaused', 'recordingTabId', 'recordingWindowId', 'recordingData'
     ]);
     if (state.isRecording && state.recordingData) {
       isRecording = true;
+      isPaused = !!state.isPaused;
       recordingTabId = state.recordingTabId;
       recordingWindowId = state.recordingWindowId;
       recordingData = state.recordingData;
-      setBadge(true);
+      setBadge();
     }
     await migrateLegacyRecording();
   } catch (error) {
@@ -89,9 +91,21 @@ async function migrateLegacyRecording() {
   await DocBotDB.deleteOrphanScreenshots().catch(() => {});
 }
 
-function setBadge(on) {
-  chrome.action.setBadgeText({ text: on ? 'REC' : '' });
-  if (on) chrome.action.setBadgeBackgroundColor({ color: '#dc3545' });
+function setBadge() {
+  if (!isRecording) {
+    chrome.action.setBadgeText({ text: '' });
+    return;
+  }
+  chrome.action.setBadgeText({ text: isPaused ? 'II' : 'REC' });
+  chrome.action.setBadgeBackgroundColor({ color: isPaused ? '#fd7e14' : '#dc3545' });
+}
+
+async function setPaused(paused) {
+  if (!isRecording) return { success: false, error: 'Nothing is being recorded.' };
+  isPaused = !!paused;
+  await chrome.storage.local.set({ isPaused });
+  setBadge();
+  return { success: true, isPaused };
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +132,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 // ---------------------------------------------------------------------------
 chrome.commands.onCommand.addListener(async (command) => {
   await ready;
+  if (command === 'toggle-pause') {
+    await setPaused(!isPaused);
+    return;
+  }
   if (command !== 'toggle-recording') return;
   if (isRecording) {
     await stopRecording();
@@ -192,6 +210,7 @@ async function handleMessage(message, sender) {
       return {
         success: true,
         isRecording,
+        isPaused,
         recordingTabId,
         recordingWindowId,
         summary: recordingData ? summarize(recordingData) : null
@@ -202,6 +221,9 @@ async function handleMessage(message, sender) {
 
     case 'stopRecording':
       return stopRecording();
+
+    case 'setPaused':
+      return setPaused(message.paused);
 
     case 'focusRecordingTab':
       if (recordingTabId !== null) {
@@ -258,6 +280,7 @@ async function startRecording(settings) {
   };
 
   isRecording = true;
+  isPaused = false;
   recordingTabId = tab.id;
   recordingWindowId = tab.windowId;
   recordingData = data;
@@ -266,6 +289,7 @@ async function startRecording(settings) {
   // Persist before injecting so the content script sees isRecording = true.
   await chrome.storage.local.set({
     isRecording: true,
+    isPaused: false,
     recordingTabId,
     recordingWindowId,
     recordingData: data,
@@ -280,18 +304,19 @@ async function startRecording(settings) {
     return { success: false, error: `Could not attach to this page: ${error.message}` };
   }
 
-  setBadge(true);
+  setBadge();
   return { success: true, tab: { id: tab.id, title: tab.title, url: tab.url } };
 }
 
 async function resetState() {
   isRecording = false;
+  isPaused = false;
   recordingTabId = null;
   recordingWindowId = null;
   recordingData = null;
-  setBadge(false);
+  setBadge();
   await chrome.storage.local.set({
-    isRecording: false, recordingTabId: null, recordingWindowId: null, recordingData: null
+    isRecording: false, isPaused: false, recordingTabId: null, recordingWindowId: null, recordingData: null
   });
 }
 
@@ -355,7 +380,9 @@ async function captureAction(actionData, tab) {
   const wantCrop = action.type === 'click' && data.settings.autoScreenshot && !!action.elementPosition;
   const wantFull = action.type === 'navigation' && !!actionData.captureScreenshot;
 
-  if (wantCrop || wantFull) {
+  if (isPaused) {
+    action.paused = true; // logged, but no screenshot while paused
+  } else if (wantCrop || wantFull) {
     await captureScreenshot(data, tab.id, action, wantCrop);
   }
 
@@ -391,7 +418,7 @@ async function doCapture(data, tabId, action, crop) {
   const wait = CAPTURE_SPACING_MS - (Date.now() - lastCaptureTime);
   if (wait > 0) await sleep(wait);
 
-  const { screenshotQuality } = await chrome.storage.local.get('screenshotQuality');
+  const { screenshotQuality, clickMarkers } = await chrome.storage.local.get(['screenshotQuality', 'clickMarkers']);
   const quality = QUALITY[screenshotQuality] || QUALITY.medium;
 
   lastCaptureTime = Date.now();
@@ -401,6 +428,7 @@ async function doCapture(data, tabId, action, crop) {
   const blob = await processCapture(rawDataUrl, {
     cssWidth: tab.width,
     clickPosition: crop ? action.elementPosition : null,
+    drawMarker: clickMarkers !== false,
     quality
   });
 
@@ -433,7 +461,7 @@ async function doCapture(data, tabId, action, crop) {
 }
 
 // Decode once, crop or downscale, draw the click marker, encode once as JPEG.
-async function processCapture(dataUrl, { cssWidth, clickPosition, quality }) {
+async function processCapture(dataUrl, { cssWidth, clickPosition, drawMarker = true, quality }) {
   const response = await fetch(dataUrl);
   const bitmap = await createImageBitmap(await response.blob());
   try {
@@ -462,7 +490,7 @@ async function processCapture(dataUrl, { cssWidth, clickPosition, quality }) {
     const ctx = canvas.getContext('2d');
     ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, dw, dh);
 
-    if (marker) {
+    if (marker && drawMarker) {
       ctx.lineWidth = 3;
       ctx.strokeStyle = '#e02020';
       ctx.fillStyle = 'rgba(224, 32, 32, 0.15)';

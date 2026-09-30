@@ -29,9 +29,10 @@
     <div class="actions">
       <button id="startBtn" class="btn btn-primary" hidden><span class="icon">&#9679;</span> Record this tab</button>
       <button id="stopBtn" class="btn btn-danger" hidden><span class="icon">&#9632;</span> Stop &amp; open report</button>
+      <button id="pauseBtn" class="btn btn-ghost" hidden>Pause screenshots</button>
       <button id="gotoBtn" class="btn btn-ghost" hidden>Go to the recorded tab</button>
     </div>
-    <p class="hint" id="startHint" hidden>Click through the site. The popup closes, but recording continues; the toolbar icon shows <b>REC</b>. Reopen the popup or press <b>Alt+Shift+R</b> to stop.</p>
+    <p class="hint" id="startHint" hidden>Click through the site. The popup closes, but recording continues; the toolbar icon shows <b>REC</b>. Reopen the popup or press <b>Alt+Shift+R</b> to stop. <b>Alt+Shift+P</b> pauses screenshots while you move between pages.</p>
   </section>
 
   <section class="card" id="recentCard" hidden>
@@ -43,7 +44,8 @@
     <summary>Capture settings</summary>
     <div class="settings-body">
       <label><input type="checkbox" id="captureClicks" checked> Record clicks</label>
-      <label><input type="checkbox" id="autoScreenshot" checked> Screenshot each click (close-up with marker)</label>
+      <label><input type="checkbox" id="autoScreenshot" checked> Screenshot each click (close-up)</label>
+      <label><input type="checkbox" id="clickMarkers" checked> Mark the clicked spot with a red circle</label>
       <label><input type="checkbox" id="captureNavigation" checked> Screenshot each new screen</label>
       <label><input type="checkbox" id="captureInputs" checked> Log form changes</label>
       <label class="select-label" for="screenshotQuality">Screenshot quality</label>

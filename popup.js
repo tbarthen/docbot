@@ -8,8 +8,8 @@ let currentSummary = null;
 document.addEventListener('DOMContentLoaded', async () => {
   for (const id of [
     'dot', 'statusText', 'tabLine', 'stats', 'screenshotCount', 'actionCount', 'duration', 'error',
-    'startBtn', 'stopBtn', 'gotoBtn', 'startHint', 'recentCard', 'sessionList',
-    'captureClicks', 'autoScreenshot', 'captureNavigation', 'captureInputs', 'screenshotQuality', 'optionsLink'
+    'startBtn', 'stopBtn', 'pauseBtn', 'gotoBtn', 'startHint', 'recentCard', 'sessionList',
+    'captureClicks', 'autoScreenshot', 'clickMarkers', 'captureNavigation', 'captureInputs', 'screenshotQuality', 'optionsLink'
   ]) ui[id] = el(id);
 
   await loadSettings();
@@ -21,9 +21,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 // Settings
 // ---------------------------------------------------------------------------
 async function loadSettings() {
-  const s = await chrome.storage.local.get(['captureClicks', 'autoScreenshot', 'captureNavigation', 'captureInputs', 'screenshotQuality']);
+  const s = await chrome.storage.local.get(['captureClicks', 'autoScreenshot', 'clickMarkers', 'captureNavigation', 'captureInputs', 'screenshotQuality']);
   ui.captureClicks.checked = s.captureClicks !== false;
   ui.autoScreenshot.checked = s.autoScreenshot !== false;
+  ui.clickMarkers.checked = s.clickMarkers !== false;
   ui.captureNavigation.checked = s.captureNavigation !== false;
   ui.captureInputs.checked = s.captureInputs !== false;
   ui.screenshotQuality.value = s.screenshotQuality || 'medium';
@@ -33,6 +34,7 @@ function currentSettings() {
   return {
     captureClicks: ui.captureClicks.checked,
     autoScreenshot: ui.autoScreenshot.checked,
+    clickMarkers: ui.clickMarkers.checked,
     captureNavigation: ui.captureNavigation.checked,
     captureInputs: ui.captureInputs.checked,
     screenshotQuality: ui.screenshotQuality.value
@@ -49,10 +51,11 @@ async function saveSettings() {
 function attachListeners() {
   ui.startBtn.addEventListener('click', startRecording);
   ui.stopBtn.addEventListener('click', stopRecording);
+  ui.pauseBtn.addEventListener('click', togglePause);
   ui.gotoBtn.addEventListener('click', () => send({ action: 'focusRecordingTab' }));
   ui.optionsLink.addEventListener('click', (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
 
-  for (const id of ['captureClicks', 'autoScreenshot', 'captureNavigation', 'captureInputs', 'screenshotQuality']) {
+  for (const id of ['captureClicks', 'autoScreenshot', 'clickMarkers', 'captureNavigation', 'captureInputs', 'screenshotQuality']) {
     ui[id].addEventListener('change', saveSettings);
   }
 
@@ -63,7 +66,7 @@ function attachListeners() {
     }
   });
   chrome.storage.onChanged.addListener((changes) => {
-    if (changes.isRecording) refresh();
+    if (changes.isRecording || changes.isPaused) refresh();
   });
 }
 
@@ -84,6 +87,13 @@ async function startRecording() {
     showError(response?.error || 'Could not start recording.');
     return;
   }
+  await refresh();
+}
+
+async function togglePause() {
+  const state = await send({ action: 'getState' });
+  const response = await send({ action: 'setPaused', paused: !state?.isPaused });
+  if (!response || !response.success) showError(response?.error || 'Could not change pause state.');
   await refresh();
 }
 
@@ -115,8 +125,10 @@ async function refresh() {
   if (state.isRecording) {
     currentSummary = state.summary;
     const onRecordedTab = activeTab && activeTab.id === state.recordingTabId;
-    setStatus('recording', 'Recording');
+    setStatus(state.isPaused ? 'paused' : 'recording', state.isPaused ? 'Recording (screenshots paused)' : 'Recording');
     ui.tabLine.textContent = state.summary?.title || '';
+    ui.pauseBtn.textContent = state.isPaused ? 'Resume screenshots' : 'Pause screenshots';
+    show(ui.pauseBtn, true);
     ui.stats.hidden = false;
     renderStats();
     startDurationTimer();
@@ -135,6 +147,7 @@ async function refresh() {
     ui.stats.hidden = true;
     show(ui.startBtn, true);
     show(ui.stopBtn, false);
+    show(ui.pauseBtn, false);
     show(ui.gotoBtn, false);
     show(ui.startHint, true);
     const recordable = activeTab && /^https?:\/\//i.test(activeTab.url || '');

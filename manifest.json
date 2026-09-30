@@ -37,6 +37,12 @@
         "default": "Alt+Shift+R"
       },
       "description": "Start or stop recording"
+    },
+    "toggle-pause": {
+      "suggested_key": {
+        "default": "Alt+Shift+P"
+      },
+      "description": "Pause or resume screenshots while recording"
     }
   },
   "icons": {
